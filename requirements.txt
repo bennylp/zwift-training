@@ -1,0 +1,5 @@
+fitparse
+geopy
+numpy
+pandas
+zwift-client

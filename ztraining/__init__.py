@@ -1,0 +1,1 @@
+from .ztraining import ZwiftTraining
