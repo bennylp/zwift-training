@@ -103,6 +103,8 @@ def gpx_to_csv(path):
 
 def fit_to_csv(path):
     fitfile = FitFile(path)
+    has_power = False
+    meta = {}
     
     rows = []
     for record in fitfile.get_messages('record'):
@@ -116,7 +118,10 @@ def fit_to_csv(path):
         cadence = data.get('cadence', np.NaN)
         speed = data.get('speed', np.NaN)
         power = data.get('power', np.NaN)
-                   
+        
+        if not has_power and not pd.isnull(power):
+            has_power = True
+            
         row = dict(dtime=raw_time, latt=latt, long=long,
                    elevation=elevation, distance=distance, hr=hr, cadence=cadence,
                    speed=speed, power=power
@@ -255,4 +260,4 @@ if __name__ == '__main__':
     #scan_update('/home/bennylp/Desktop/project/zwift-planner/activities/raw/garmin-fix', 'activities/rides')
     #calc_power_curve('/home/bennylp/Desktop/project/zwift-planner/activities/rides', max_hr=128,
     #                 from_date=pd.Timestamp('2020-06-08'), to_date=pd.Timestamp('2020-06-08'))
-    
+    pass

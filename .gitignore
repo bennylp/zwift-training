@@ -1,1 +1,6 @@
 .ipynb_checkpoints
+__pycache__
+benny.json
+tests/test.json
+tmp
+
