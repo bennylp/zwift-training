@@ -1,6 +1,6 @@
 from collections import OrderedDict
 import datetime
-from fitparse import FitFile
+from fitparse import FitFile, FitParseError
 from geopy import distance
 import glob
 import json
@@ -54,7 +54,7 @@ class ZwiftTraining:
             self._zwift_profile = None
             
         if not quiet:
-            print(f'Zwift login: {self.conf.get("zwift-user")}')
+            print(f'Zwift user: {self.conf.get("zwift-user")}')
             print(f'Profile data directory: {self.profile_dir}')
         
     @property
@@ -86,7 +86,49 @@ class ZwiftTraining:
             # Not sure what to do if metric is not used
             assert self._zwift_profile['useMetric'], "Not sure what to change if metric is not used"
         return self._zwift_profile
+    
+    def plot_profile_history(self, field, interval='W-SUN', from_dtime=None, to_dtime=None):
+        df = self.profile_history
+        if df is None or not len(df):
+            print('Error: no profile history or profile history is empty')
+            return
+        
+        df = df.set_index('dtime')
+        df['diff'] = df[field].diff().fillna(0)
+        
+        if from_dtime:
+            df = df.loc[from_dtime:,:]
+        if to_dtime:
+            df = df.loc[:to_dtime,:]
+        
+        last_value = np.NaN
+        
+        def func(group):
+            nonlocal last_value
+            if len(group)==0:
+                return pd.Series({'diff': 0, field: last_value})
+            else:
+                last_value = group[field].iloc[-1]
+                return pd.Series({'diff': group['diff'].sum(), field: last_value})
             
+        df = df.groupby(pd.Grouper(freq=interval)).apply(func)
+        
+        fig, ax = plt.subplots(1, 1, figsize=(15,6))
+        
+        title = field.replace('_', ' ').title()
+        ax.set_title(title)
+        handles = ax.plot(df.index, df[field], color='C1', alpha=1, zorder=10)
+        
+        ax2 = ax.twinx()
+        ax2.bar(df.index, df['diff'], color='darkgreen', alpha=0.5, zorder=5)
+        ax2.set_ylabel(f'{title} Difference')
+        handles.append( plt.Rectangle((0,0),1,1, color='darkgreen', alpha=0.5) )
+        
+        ax.set_ylabel(field)
+        ax.grid()
+        ax.legend(handles, [f'Accumulative {title}', f'{title} Difference'])
+        plt.show()
+        
     def get_activities(self, from_dtime=None, to_dtime=None, sport=None):
         df = pd.read_csv(self.activity_file, parse_dates=['dtime'])
         df['title'] = df['title'].fillna('')
@@ -104,7 +146,27 @@ class ZwiftTraining:
             df = df[ df['dtime'] <= to_dtime ]
             
         return df
-    
+
+    def get_activity_data(self, dtime=None, src_file=None):
+        assert dtime or src_file, "Either dtime and/or src_file must be specified"
+
+        df = self.get_activities()
+        if dtime:
+            df = df[ df['dtime']==dtime ]
+        if src_file:
+            df = df[ df['src_file']==src_file ]
+        
+        if not len(df):
+            sys.stderr.write('Error: no matching activity found\n')
+            return None
+
+        dtime = df['dtime'].iloc[0]
+        activities_dir = os.path.join(self.profile_dir, 'activities')
+        csv_filename = dtime.strftime('%Y-%m-%d_%H-%M-%S.csv')
+        csv_filename = os.path.join(activities_dir, csv_filename)
+
+        return pd.read_csv(csv_filename, parse_dates=['dtime'])
+            
     def activity_exists(self, dtime=None, src_file=None, tolerance=90):
         if os.path.exists(self.activity_file):
             df = pd.read_csv(self.activity_file, parse_dates=['dtime'])
@@ -122,7 +184,61 @@ class ZwiftTraining:
             return len(found) > 0
         else:
             return False
-    
+
+    def plot_activity(self, dtime=None, src_file=None, x='mov_duration'):
+        assert x in ['distance', 'mov_duration', 'duration', 'dtime']
+        
+        df = self.get_activity_data(dtime=dtime, src_file=src_file)
+        df['mov_duration'] = pd.to_timedelta(df['mov_duration'], unit='s')
+        df['duration'] = pd.to_timedelta(df['duration'], unit='s')
+        
+        cols = ['speed', 'elevation', 'hr', 'power', 'cadence', 'temp']
+        cols = [col for col in cols if not pd.isnull(df[col].iloc[0])]
+        
+        fig, axs = plt.subplots(nrows=len(cols), ncols=1, figsize=(15,3*len(cols)))
+        for i_r, col in enumerate(cols):
+            ax = axs[i_r]
+            df.plot(x=x, y=col, ax=ax, color=f'C{i_r}', zorder=10)
+            ax.axhline(df[col].mean(), color=f'C{i_r}', linestyle='--', zorder=1)
+            ax.set_ylabel(col)
+            ax.set_title(f'{col} avg: {df[col].mean():.1f}, max: {df[col].max()}')
+            ax.grid()
+            
+        fig.tight_layout()
+        plt.show()
+        
+    def delete_activity(self, dtime=None, src_file=None, dry_run=False, quiet=False):
+        assert dtime or src_file, "Either dtime and/or src_file must be specified"
+        
+        activities = self.get_activities()
+        df = activities.copy()
+        if dtime:
+            df = df[ df['dtime']==dtime ]
+        if src_file:
+            df = df[ df['src_file']==src_file ]
+        
+        if not len(df):
+            sys.stderr.write('Error: no matching activity found\n')
+            return False
+        
+        dtime = df['dtime'].iloc[0]
+        activities_dir = os.path.join(self.profile_dir, 'activities')
+        csv_filename = dtime.strftime('%Y-%m-%d_%H-%M-%S.csv')
+        csv_filename = os.path.join(activities_dir, csv_filename)
+
+        if not os.path.exists(csv_filename):
+            sys.stderr.write(f'Warning: activity file {csv_filename} not found\n')
+        else:
+            if not quiet:
+                print(f'Deleting {csv_filename}')
+            if not dry_run:
+                os.remove(csv_filename)
+
+        activities = activities.drop(index=df.index)
+        activities = activities.sort_values('dtime')
+        if not dry_run:
+            activities.to_csv(self.activity_file, index=False)
+            
     def import_files(self, dir, max=None, from_dtime=None, to_dtime=None, 
                      overwrite=False, quiet=False):
         files = glob.glob(os.path.join(dir, '*'))
@@ -209,6 +325,26 @@ class ZwiftTraining:
         
     def zwift_update(self, start=0, max=0, batch=10, from_dtime=None, to_dtime=None, 
                      profile=True, overwrite=False, quiet=False):
+        """
+        Update local profile and statistics and optionally scan and update new activities 
+        from the online Zwift account.
+        
+        Parameters:
+        - start:      Start number of activity index to import (zero is the latest) 
+        - max:        Maximum number of activities to scan.
+        - batch:      How many activities to scan from Zwift website for each loop
+        - from_dtime: Only import activities from this datetime. We still have to scan
+                      the activities one by one starting from the latest activity,
+                      so the start and max parameters are still used.
+        - to_dtime:   Only import activities older than this datetime.
+        - profile:    True to check for profile updates.
+        - overwrite:  True to force overwriting already saved activities. This is only
+                      usable if previous import was corrupt.
+        - quiet:      True to silence the update.
+        
+        Returns:
+          Number of updates performed
+        """
         n_updates = 0
         
         if not os.path.exists(self.profile_dir):
@@ -335,29 +471,44 @@ class ZwiftTraining:
             if to_dtime.hour==0 and to_dtime.minute==0:
                 to_dtime = to_dtime.replace(hour=23, minute=59, second=59)
                 
-        while True:
-            has_update = False
-            activities = activity_client.list(start=start, limit=batch)
+        while start < max:
+            limit = start+batch
+            if not quiet:
+                print(f'Querying start: {start}, limit: {limit}')
+            
+            activities = activity_client.list(start=start, limit=limit)
+            if not quiet:
+                print(f'Fetched {len(activities)} activities metadata')
+            
+            if not activities:
+                break
+            
             for activity in activities:
-                meta = ZwiftTraining._parse_meta_from_zwift_activity(activity)
-                if not quiet:
-                    print(f'Found {meta["dtime"]}: {meta["title"]}')
-                if self.activity_exists(src_file=meta['src_file']) and not overwrite:
-                    continue
-                if from_dtime and meta['dtime'] < from_dtime:
-                    continue
-                if to_dtime and meta['dtime'] > to_dtime:
-                    continue
-                df, meta = self.parse_zwift_activity(activity['id'], meta=meta, quiet=quiet)
-                self.save_activity(df, meta, overwrite=overwrite, quiet=quiet)
-                has_update = True
-                n_updates += 1
-                if max is not None and start+batch >= max:
+                if start >= max:
                     break
                 
-            if max is not None and start+batch >= max:
-                break
-            start += batch
+                meta = ZwiftTraining._parse_meta_from_zwift_activity(activity)
+                if not quiet:
+                    print(f'Found activity {start}: {meta["title"]} ({meta["dtime"]}) (id: {activity["id"]})')
+                    
+                if self.activity_exists(src_file=meta['src_file']) and not overwrite:
+                    start += 1
+                    continue
+                if from_dtime and meta['dtime'] < from_dtime:
+                    start += 1
+                    continue
+                if to_dtime and meta['dtime'] > to_dtime:
+                    start += 1
+                    continue
+                
+                try:
+                    df, meta = self.parse_zwift_activity(activity['id'], meta=meta, quiet=quiet)
+                    self.save_activity(df, meta, overwrite=overwrite, quiet=quiet)
+                    n_updates += 1
+                except FitParseError as e:
+                    sys.stderr.write(f'Import error: error parsing activity index: {start}, id: {activity["id"]}, datetime: {meta["dtime"]}, title: "{meta["title"]}", duration: {activity["duration"]}: FitParseError: {str(e)} \n')
+                
+                start += 1
             
         return n_updates
 
@@ -370,7 +521,7 @@ class ZwiftTraining:
             meta = ZwiftTraining._parse_meta_from_zwift_activity(activity)
             #meta = pickle.load( open( "meta.pkl", "rb" ) )
         if not quiet:
-            print(f'Zwift: getting activity {meta["title"]} ({meta["dtime"]})')
+            print(f'Getting activity {meta["title"]} ({meta["dtime"]})')
         records = activity_client.get_data(activity_id)
         #records = pickle.load( open( "records.pkl", "rb" ) )
         return ZwiftTraining.parse_fit_records(records, meta) 

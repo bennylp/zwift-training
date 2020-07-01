@@ -1,6 +1,9 @@
 .ipynb_checkpoints
 __pycache__
 benny.json
+benny-demo.json
 tests/test.json
+my-ztraining-data
+my-zwift-training
 tmp
 
