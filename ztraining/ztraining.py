@@ -17,6 +17,14 @@ from xml.dom import minidom
 from zwift import Client
 
 
+def xml_get_text(element):
+    rc = []
+    for node in element.childNodes:
+        if node.nodeType == node.TEXT_NODE:
+            rc.append(node.data)
+    return ''.join(rc)
+
+    
 def xml_path_val(element, tag_names, default=None):
     tag_names = tag_names.split('|')
     for tag_name in tag_names:
@@ -30,11 +38,7 @@ def xml_path_val(element, tag_names, default=None):
             raise RecursionError(f'Multiple {tag_name}s found')
         element = nodes[0]
     
-    rc = []
-    for node in element.childNodes:
-        if node.nodeType == node.TEXT_NODE:
-            rc.append(node.data)
-    return ''.join(rc)
+    return xml_get_text(element)
 
 
 class ZwiftTraining:
@@ -206,6 +210,31 @@ class ZwiftTraining:
             
         fig.tight_layout()
         plt.show()
+
+    def plot_activities(self, field, interval='W-SUN', sport=None, from_dtime=None, to_dtime=None):
+        df = self.get_activities(from_dtime=from_dtime, to_dtime=to_dtime, sport=sport)
+        if df is None or not len(df):
+            print('Error: no activities found')
+            return
+        
+        df = df.set_index('dtime')
+        df = df.groupby(pd.Grouper(freq=interval)).agg({field: 'sum'})
+        
+        fig, ax = plt.subplots(1, 1, figsize=(15,6))
+        
+        title = field.replace('_', ' ').title()
+        if field in ['duration', 'mov_duration']:
+            df[field] = df[field].dt.total_seconds() / 3600
+            title += ' (Hours)'
+        
+        ax.set_title(title)
+        x = pd.to_datetime(df.index)
+        ax.bar(x, df[field], label=title, width=5, align='center')
+        #df.plot(kind='bar', y=field, label=title, ax=ax)
+        ax.set_ylabel(title)
+        ax.grid()
+        ax.legend()
+        plt.show()
         
     def delete_activity(self, dtime=None, src_file=None, dry_run=False, quiet=False):
         assert dtime or src_file, "Either dtime and/or src_file must be specified"
@@ -239,6 +268,8 @@ class ZwiftTraining:
         if not dry_run:
             activities.to_csv(self.activity_file, index=False)
             
+        return df
+
     def import_files(self, dir, max=None, from_dtime=None, to_dtime=None, 
                      overwrite=False, quiet=False):
         files = glob.glob(os.path.join(dir, '*'))
@@ -286,6 +317,16 @@ class ZwiftTraining:
         return len(updates)
 
     def import_activity_file(self, path, sport=None, overwrite=False, quiet=False):
+        """
+        Import activity data and metadata from a TCX/GPX/FILE file.
+        
+        Parameters:
+        - path:       Path to file to import
+        - sport:      Give a hint about the sport of this activity.
+        - overwrite:  False (the default) means do not save the activity if previous
+                      activity with the same filename has been imported.
+        - quiet:      Do not print messages if True
+        """
         df, meta = ZwiftTraining.parse_file(path)
         if not meta['sport']:
             meta['sport'] = sport
@@ -441,15 +482,16 @@ class ZwiftTraining:
                     .tz_convert(pytz.timezone("Asia/Jakarta")) \
                     .tz_localize(None) \
                     .replace(microsecond=0)
+        calories = round(activity['calories'], 1) if 'calories' in activity else np.NaN
         meta = OrderedDict(dtime=dtime, sport=activity['sport'].lower(), 
-                           title=activity['name'], src_file=src_file)
+                           title=activity['name'], src_file=src_file,
+                           calories=calories)
         if extended:
             meta['id'] = activity['id']
             meta['duration'] = pd.Timestamp(activity['endDate']) - pd.Timestamp(activity['startDate'])
             meta['distance'] = round(activity['distanceInMeters'] / 1000, 1)
             meta['elevation'] = round(activity['totalElevation'], 1)
             meta['power_avg'] = round(activity['avgWatts'], 1)
-            meta['calories'] = round(activity['calories'], 1)
         
         return meta
         
@@ -513,17 +555,14 @@ class ZwiftTraining:
         return n_updates
 
     def parse_zwift_activity(self, activity_id, meta=None, quiet=False):
-        #import pickle
         player_id = self.zwift_profile['id']
         activity_client = self.zwift_client.get_activity(player_id)
         if not meta:
             activity = activity_client.get_activity(activity_id)
             meta = ZwiftTraining._parse_meta_from_zwift_activity(activity)
-            #meta = pickle.load( open( "meta.pkl", "rb" ) )
         if not quiet:
             print(f'Getting activity {meta["title"]} ({meta["dtime"]})')
         records = activity_client.get_data(activity_id)
-        #records = pickle.load( open( "records.pkl", "rb" ) )
         return ZwiftTraining.parse_fit_records(records, meta) 
             
     def plot_power_curves(self, periods, min_interval=None, max_interval=None, max_hr=None, title=None):
@@ -930,6 +969,14 @@ class ZwiftTraining:
             meta['temp_avg'] = np.NaN
             meta['temp_max'] = np.NaN
         
+        # Move calories to end of dictionary
+        if 'calories' in meta:
+            calories = meta['calories']
+            del meta['calories']
+        else:
+            calories = np.NaN
+        meta['calories'] = calories
+        
         # Round some values
         df = df.copy()
         df['elevation'] = df['elevation'].astype('float').round(2)
@@ -979,6 +1026,15 @@ class ZwiftTraining:
                    .lower()
         title = xml_path_val(doc, 'Activities|Activity|Notes', '')
         
+        calories = 0
+        calories_nodes = doc.getElementsByTagName('Calories')
+        for node in calories_nodes:
+            s = xml_get_text(node)
+            if s.strip():
+                calories += float(s.strip())
+        if not calories:
+            calories = np.NaN
+        
         trackpoints = doc.getElementsByTagName('Trackpoint')
         rows = []
         for trackpoint in trackpoints:
@@ -1008,7 +1064,8 @@ class ZwiftTraining:
         df = pd.DataFrame(rows)
         df['dtime'] = df['dtime'].dt.tz_convert(pytz.timezone("Asia/Jakarta")).dt.tz_localize(None)
         df['distance'] = df['distance'].astype('float') / 1000
-        meta = OrderedDict(dtime=df['dtime'].iloc[0], sport=sport, title=title, src_file=os.path.split(path)[-1])
+        meta = OrderedDict(dtime=df['dtime'].iloc[0], sport=sport, title=title, 
+                           src_file=os.path.split(path)[-1], calories=calories)
         return ZwiftTraining._process_activity(df, meta, copy=False)
     
     @staticmethod
@@ -1157,3 +1214,81 @@ class ZwiftTraining:
                 meta['sport'] = 'running'
             
         return ZwiftTraining._process_activity(df, meta, copy=False)
+
+    def _zwift_update_calories(self, start=0, max=0, batch=10):
+        player_id = self.zwift_profile['id']
+        activity_client = self.zwift_client.get_activity(player_id)
+        
+        calories_updates = {}
+        
+        while start < max:
+            limit = start+batch
+            print(f'Querying start: {start}, limit: {limit}')
+            
+            activities = activity_client.list(start=start, limit=limit)
+            print(f'Fetched {len(activities)} activities metadata')
+            
+            if not activities:
+                break
+            
+            for activity in activities:
+                if start >= max:
+                    break
+                
+                meta = ZwiftTraining._parse_meta_from_zwift_activity(activity)
+                calories_updates[meta['src_file']] = meta['calories']
+                start += 1
+
+        print(f'Updating {len(calories_updates)} activities')            
+        df = pd.read_csv(self.activity_file, parse_dates=['dtime'])
+        for src_file, cal in calories_updates.items():
+            found = df[ df['src_file']==src_file ]
+            if not len(found):
+                print(f'Error: {src_file} not found')
+                continue
+            if len(found) > 1:
+                print(f'Warning: found {len(found)} rows for {src_file}')
+            df.loc[ found.index, 'calories' ] = cal
+            print(f'Row {found.index} updated')
+        
+        df = df.sort_values('dtime')
+        df.to_csv(self.activity_file, index=False)
+
+    def _update_tcx_calories(self, import_dir, start=0, max=0):
+        df = pd.read_csv(self.activity_file, parse_dates=['dtime'])
+        
+        tcx_df = df[ df['src_file'].str.contains('.tcx') ]
+        calories_updates = {}
+        
+        tcx_df = tcx_df.sort_values('dtime', ascending=False)
+        
+        for idx, row in tcx_df.iterrows():
+            print(f'\rProcessing activity {idx}   ', end='')
+            start -= 1
+            if start >= 0:
+                continue
+            
+            path = os.path.join(import_dir, row['src_file'])
+            if os.path.exists(path):
+                _, meta = self.parse_tcx_file(path)
+                if not pd.isnull(meta['calories']) and meta['calories']:
+                    calories_updates[ row['src_file'] ] = meta['calories']
+            
+            if len(calories_updates) >= max:
+                break
+            
+        print(f'Updating {len(calories_updates)} activities')            
+        df = pd.read_csv(self.activity_file, parse_dates=['dtime'])
+        for src_file, cal in calories_updates.items():
+            found = df[ df['src_file']==src_file ]
+            if not len(found):
+                print(f'Error: {src_file} not found')
+                continue
+            if len(found) > 1:
+                print(f'Warning: found {len(found)} rows for {src_file}')
+            df.loc[ found.index, 'calories' ] = cal
+            print(f'Row {found.index} updated')
+        
+        df = df.sort_values('dtime')
+        df.to_csv(self.activity_file, index=False)
+            
