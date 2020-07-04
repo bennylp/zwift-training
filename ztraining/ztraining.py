@@ -115,22 +115,34 @@ class ZwiftTraining:
                 last_value = group[field].iloc[-1]
                 return pd.Series({'diff': group['diff'].sum(), field: last_value})
             
-        df = df.groupby(pd.Grouper(freq=interval)).apply(func)
-        
-        fig, ax = plt.subplots(1, 1, figsize=(15,6))
-        
+        df = df.groupby(pd.Grouper(freq=interval, label='left')).apply(func)
         title = field.replace('_', ' ').title()
+
+        if len(df) > 10:
+            width = 0.8
+        elif len(df) > 5:
+            width = 3
+        else:
+            width = 3
+            
+        fig, ax = plt.subplots(1, 1, figsize=(15,6))
+
         ax.set_title(title)
-        handles = ax.plot(df.index, df[field], color='C1', alpha=1, zorder=10)
+        ax.bar(df.index, df['diff'], color='darkgreen', width=width, alpha=0.5, zorder=5)
+        ax.set_ylabel(f'{title}')
+        handles = [plt.Rectangle((0,0),1,1, color='darkgreen', alpha=0.5)]
         
         ax2 = ax.twinx()
-        ax2.bar(df.index, df['diff'], color='darkgreen', alpha=0.5, zorder=5)
-        ax2.set_ylabel(f'{title} Difference')
-        handles.append( plt.Rectangle((0,0),1,1, color='darkgreen', alpha=0.5) )
+        handles.extend( ax2.plot(df.index, df[field], color='C1', alpha=1, zorder=10) )
+        ax2.set_ylabel(f'Accumulation')
         
-        ax.set_ylabel(field)
+        ax.set_xticks(df.index)
+        ax.set_xticklabels(df.index.strftime('%y-%m-%d'))
+        if len(df) >= 10:
+            plt.setp( ax.xaxis.get_majorticklabels(), rotation=70 )
+        
         ax.grid()
-        ax.legend(handles, [f'Accumulative {title}', f'{title} Difference'])
+        ax.legend(handles, [f'{title}', f'Accummulation'])
         plt.show()
         
     def get_activities(self, from_dtime=None, to_dtime=None, sport=None):
@@ -218,7 +230,7 @@ class ZwiftTraining:
             return
         
         df = df.set_index('dtime')
-        df = df.groupby(pd.Grouper(freq=interval)).agg({field: 'sum'})
+        df = df.groupby(pd.Grouper(freq=interval, closed='left', label='left')).agg({field: 'sum'})
         
         fig, ax = plt.subplots(1, 1, figsize=(15,6))
         
@@ -229,8 +241,20 @@ class ZwiftTraining:
         
         ax.set_title(title)
         x = pd.to_datetime(df.index)
-        ax.bar(x, df[field], label=title, width=5, align='center')
-        #df.plot(kind='bar', y=field, label=title, ax=ax)
+        if len(x) > 10:
+            width = 0.8
+        elif len(x) > 5:
+            width = 3
+        else:
+            width = 3
+            
+        ax.bar(x, df[field], label=title, width=width, align='center', color='darkgreen', alpha=0.5)
+        
+        ax.set_xticks(x)
+        ax.set_xticklabels(x.strftime('%Y-%m-%d'))
+        if len(x) >= 10:
+            plt.setp( ax.xaxis.get_majorticklabels(), rotation=70 )
+            
         ax.set_ylabel(title)
         ax.grid()
         ax.legend()
@@ -733,11 +757,32 @@ class ZwiftTraining:
         route = route.drop(columns=['name'])
             
         return route
+    
+    @staticmethod
+    def tss_to_avg_watt(ftp, tss, duration):
+        # TSS = hour * avg_watt**2 / ftp**2 * 100
+        # avg_watt = (tss / hour * ftp**2 / 100) ** 0.5
+        hour = pd.Timedelta(duration).total_seconds() / 3600
+        return (tss * (ftp**2) / hour / 100) ** 0.5
         
-    def best_cycling_route(self, avg_watt, max_duration, min_duration=None, 
+    @staticmethod
+    def avg_watt_to_tss(ftp, avg_watt, duration):
+        #np = avg_watt
+        #IF = np / ftp
+        #tss = (pd.Timedelta(duration).total_seconds()  * np * IF) / (ftp * 3600) * 100
+        tss = pd.Timedelta(duration).total_seconds() / 3600 * (avg_watt ** 2) / (ftp ** 2) * 100
+        return tss
+
+    def best_cycling_route(self, max_duration, avg_watt=None, tss=None, ftp=None, min_duration=None, 
                            kind=None, done=None, quiet=False):
+        assert (avg_watt is not None) or (tss is not None and ftp is not None)
         assert kind is None or kind in ['ride', 'interval', 'workout']
         max_minutes = pd.Timedelta(max_duration).total_seconds() / 60
+        
+        if avg_watt is None:
+            avg_watt = ZwiftTraining.tss_to_avg_watt(ftp, tss, max_duration)
+            if not quiet:
+                print(f'Avg watt: {avg_watt:.0f}')
         
         regressor = self._train_duration_predictor(quiet=quiet)
         df = self._load_routes(sport='cycling')
