@@ -703,7 +703,7 @@ class ZwiftTraining:
         
         return curve_df
 
-    def _train_duration_predictor(self, quiet=False):
+    def _train_duration_predictor1(self, quiet=False):
         df = self.get_activities(sport='cycling')
         df = df[ (df['distance'] > 5) & (df['elevation'] > 1) & (df['power_avg'] > 5)]
         df = df.sort_values('dtime').tail(10)
@@ -730,6 +730,59 @@ class ZwiftTraining:
             print(f'Mean error: {me_pct:.1%}')
         
         return reg        
+    
+    @staticmethod
+    def _convert_to_segments(df, segment_length_meters=100):
+        df['segment_num'] = (df['distance'] * 1000 / segment_length_meters).astype('int')
+        agg_rules = {'distance': 'last', 'elevation': 'last', 'mov_duration': 'last'}
+        if 'power' in df.columns:
+            agg_rules['power'] = 'mean'
+        segments = df.groupby('segment_num').agg(agg_rules)
+        if 'power' not in df.columns:
+            segments['power_avg'] = np.NaN
+        segments.columns = ['last_distance', 'last_elevation', 'last_mov_duration', 'power_avg']
+        segments['distance'] = segments['last_distance'].diff()
+        segments['elevation'] = segments['last_elevation'].diff()
+        segments['seconds'] = segments['last_mov_duration'].diff()
+        segments = segments.iloc[1:]
+        return segments[['distance', 'elevation', 'seconds', 'power_avg']]
+        
+    def _train_duration_predictor2(self, activity_dtime, quiet=False):
+        """
+        Train linear regression model to predict duration using the specified activity
+        """
+        df = self.get_activity_data(dtime=activity_dtime)
+        segments = ZwiftTraining._convert_to_segments(df)
+
+        X = segments[['distance', 'elevation', 'power_avg']]
+        y = segments['seconds']
+        model = LinearRegression().fit(X, y)
+        
+        if not quiet:
+            pred = model.predict(X)
+            y_dur1 = df['mov_duration'].iloc[-1]
+            y_dur2 = segments['seconds'].sum()
+            pred_dur = pred.sum()
+            diff = abs(pred_dur - y_dur2)
+            err = diff / y_dur2
+            print(f'Regression: duration: {y_dur2}, prediction: {pred_dur}. error: {diff} secs ({err:.1%})')
+        
+        return model
+
+    def _predict_duration2(self, model, route_file, avg_power, quiet=False):
+        r_df, r_meta = ZwiftTraining.parse_file(route_file)
+        if not quiet:
+            print(f"Distance: {r_meta['distance']:.1f} km, elevation: {r_meta['elevation']:.0f}m")
+        segments = ZwiftTraining._convert_to_segments(r_df)
+        if not quiet:
+            print(f"Distance: {segments['distance'].sum():.1f} km, elevation: {segments['elevation'].sum():.0f}m")
+        segments['power_avg'] = avg_power
+        X = segments[['distance', 'elevation', 'power_avg']]
+        pred = model.predict(X)
+        dur = pd.Timedelta(seconds=pred.sum())
+        if not quiet:
+            print(f"Predicted duration: {dur}")
+        return dur
     
     def _load_routes(self, sport=None):
         route = pd.read_csv('data/routes.csv')
@@ -784,7 +837,7 @@ class ZwiftTraining:
             if not quiet:
                 print(f'Avg watt: {avg_watt:.0f}')
         
-        regressor = self._train_duration_predictor(quiet=quiet)
+        regressor = self._train_duration_predictor1(quiet=quiet)
         df = self._load_routes(sport='cycling')
         
         # In "ride" mode, Zwift awards 20 xp per km
