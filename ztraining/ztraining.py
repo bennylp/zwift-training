@@ -703,6 +703,101 @@ class ZwiftTraining:
         
         return curve_df
 
+    @staticmethod
+    def calc_max_powers(df):
+        if not len(df):
+            return {}
+        
+        dtime = df.iloc[0]['dtime']
+        
+        periods = []
+        periods += list(range(1, 30, 1))
+        periods += list(range(30, 60, 5))
+        periods += list(range(60, 120, 10))
+        periods += list(range(120, 300, 30))
+        periods += list(range(300, 1200, 60))
+        periods += list(range(1200, 7200, 300))
+        periods += list(range(7200, 12*3600+600, 600))
+        
+        df = df[['dtime', 'power']].dropna()
+        df['power'] = df['power'].astype('float')
+        if not len(df):
+            return {}
+        
+        MIN_POWER = 20
+        MAX_POWER = 3000
+        df = df[ (df['power'] >= MIN_POWER) & (df['power'] <= MAX_POWER)]
+        if not len(df):
+            return {}
+        
+        result = {'dtime': dtime}
+        for p in periods:
+            result[str(p)] = round(df['power'].rolling(p).mean().max(), 1)
+        return result
+    
+    def calc_activities_duration_in_power_zones(self, from_dtime, to_dtime, ftp=None, 
+                                                zones=[0.55, 0.75, 0.9, 1.05, 1.2, 1.5]):
+        if from_dtime:
+            from_dtime = pd.Timestamp(from_dtime)
+            
+        if to_dtime:
+            to_dtime = pd.Timestamp(to_dtime)
+            if to_dtime.hour==0 and to_dtime.minute==0:
+                to_dtime = to_dtime.replace(hour=23, minute=59, second=59)
+        
+        activities = self.get_activities(from_dtime=from_dtime, to_dtime=to_dtime, sport='cycling')
+        activities = activities.set_index('dtime', drop=True)
+        if len(activities)==0:
+            print(f'Error: no cycling activities found between {from_dtime} - {to_dtime}')
+            return
+        
+        ph = self.profile_history
+        if len(ph)==0:
+            print(f'Error: no profile history')
+            return
+        
+        def get_ftp_at(dtime):
+            MAX_FTP_VALIDITY = 3*30
+            p = ph
+            p = p[(p['dtime'] >= dtime - pd.Timedelta(days=MAX_FTP_VALIDITY)) & (p['dtime'] <= dtime)]
+            if len(p)==0:
+                print(f'No FTP data on {dtime.date()}')
+                return None
+            p_prev = p[p['dtime'] <= dtime]
+            if len(p_prev):
+                p = p_prev
+            return p.iloc[0]['ftp']
+            
+        results = []
+        zones = [0] + zones
+        for dtime, adf in activities.iterrows():
+            ftp_at_that_time = ftp or get_ftp_at(dtime)
+            if not ftp_at_that_time:
+                continue
+            data = self.get_activity_data(dtime=dtime, src_file=adf['src_file'])
+            if len(data)==0:
+                sys.stderr.write(f'Error: unable to find activity on {dtime}\n')
+                continue
+            if pd.isnull(data['power'].iloc[0]):
+                continue
+            data = data[ data['power'] != 0 ]
+            data['%ftp'] = data['power'] / ftp_at_that_time
+            data['power_zone'] = None
+            for i_z in range(len(zones)):
+                mi = zones[i_z]
+                ma = zones[i_z+1] if i_z < len(zones)-1 else 1e10
+                data.loc[ ((data['%ftp'] > mi) & (data['%ftp'] <= ma)), 'power_zone' ] = i_z+1
+
+            secs_in_zone = data.groupby('power_zone').agg({'dtime': 'count'})
+            secs_in_zone = secs_in_zone.rename(columns={'dtime': dtime})
+            results.append(secs_in_zone)
+                
+        result = pd.concat(results, axis=1).fillna(0)
+        #for col in result.columns:
+        #    result[col] = pd.to_timedelta(result[col], unit='s')
+        return result
+            
+    
     def _train_duration_predictor1(self, quiet=False):
         df = self.get_activities(sport='cycling')
         df = df[ (df['distance'] > 5) & (df['elevation'] > 1) & (df['power_avg'] > 5)]
@@ -917,38 +1012,6 @@ class ZwiftTraining:
             
         return route
 
-    @staticmethod
-    def calc_max_powers(df):
-        if not len(df):
-            return {}
-        
-        dtime = df.iloc[0]['dtime']
-        
-        periods = []
-        periods += list(range(1, 30, 1))
-        periods += list(range(30, 60, 5))
-        periods += list(range(60, 120, 10))
-        periods += list(range(120, 300, 30))
-        periods += list(range(300, 1200, 60))
-        periods += list(range(1200, 7200, 300))
-        periods += list(range(7200, 12*3600+600, 600))
-        
-        df = df[['dtime', 'power']].dropna()
-        df['power'] = df['power'].astype('float')
-        if not len(df):
-            return {}
-        
-        MIN_POWER = 20
-        MAX_POWER = 3000
-        df = df[ (df['power'] >= MIN_POWER) & (df['power'] <= MAX_POWER)]
-        if not len(df):
-            return {}
-        
-        result = {'dtime': dtime}
-        for p in periods:
-            result[str(p)] = round(df['power'].rolling(p).mean().max(), 1)
-        return result
-    
     @staticmethod
     def _process_activity(df, meta, min_kph=3, copy=True):
         if copy:
@@ -1389,4 +1452,111 @@ class ZwiftTraining:
         
         df = df.sort_values('dtime')
         df.to_csv(self.activity_file, index=False)
+    
+    @staticmethod
+    def display_zwo(path, ftp):
+        from IPython.display import display, clear_output, Markdown, HTML
+        
+        def _getText(childNodes):
+            rc = []
+            for node in childNodes:
+                if node.nodeType == node.TEXT_NODE:
+                    rc.append(node.data)
+            return ''.join(rc)
+    
+        def _to_time(sec):
+            sec = int(float(sec))
+            if sec < 3600:
+                return f'{sec//60:02d}:{sec%60:02d}'
+            else:
+                return f'{sec//3600:}:{(sec%3600)//60:02d}:{sec%60:02d}'
+        
+        doc = minidom.parse(path)
+        print(f'Title      : {_getText(doc.getElementsByTagName("name")[0].childNodes)}')
+        print(f'Author     : {_getText(doc.getElementsByTagName("author")[0].childNodes)}')
+        print(f'Description: {_getText(doc.getElementsByTagName("description")[0].childNodes)}')
+        print('Workouts:')
+        
+        workout = doc.getElementsByTagName('workout')[0]
+        time = 0
+        rows = []
+        for node in workout.childNodes:
+            if node.nodeType == node.TEXT_NODE:
+                pass
+            elif node.tagName.lower() == "freeride":
+                duration = int(node.attributes['Duration'].value)
+                text = ''
+                for child in node.childNodes:
+                    if child.nodeType != node.TEXT_NODE and child.tagName.lower()=='textevent':
+                        when = child.attributes['timeoffset'].value
+                        msg = child.attributes['message'].value
+                        text += f"[{_to_time(when)}] {msg}\n"
+                rows.append( {"time": time, 
+                              "type": 'freeride', 
+                              "duration": duration,
+                              "repeat": '', 
+                              "on watt": '', 
+                              "on duration": '',
+                              "on rpm": '',
+                              "off watt": '', 
+                              "off duration": '',
+                              "off rpm": '',
+                              "text": text} )            
+                
+                time += duration
+            elif node.tagName.lower() == "intervalst":
+                repeat = int(node.attributes['Repeat'].value)
+                on_duration = int(node.attributes['OnDuration'].value)
+                off_duration = int(node.attributes['OffDuration'].value)
+                on_power = float(node.attributes['OnPower'].value) * ftp
+                off_power = float(node.attributes['OffPower'].value) * ftp
+                if 'Cadence' in node.attributes:
+                    on_cadence = f"{node.attributes['Cadence'].value}"
+                    off_cadence = f"{node.attributes['CadenceResting'].value}"
+                else:
+                    on_cadence = ''
+                    off_cadence = ''
+                duration = repeat * (on_duration + off_duration)
+                text = ''
+                for child in node.childNodes:
+                    if child.nodeType != node.TEXT_NODE and child.tagName.lower()=='textevent':
+                        when = child.attributes['timeoffset'].value
+                        msg = child.attributes['message'].value
+                        text += f"[{_to_time(when)}] {msg}\n"
+                        if float(when)+20 > duration:
+                            sys.stderr.write(f'Error: text event exceeds duration ([{_to_time(when)}] {msg})\n')
+                rows.append( {"time": time, 
+                              "type": 'interval', 
+                              "duration": duration,
+                              "repeat": repeat, 
+                              "on watt": round(on_power, 2), 
+                              "on duration": on_duration,
+                              "on rpm": on_cadence,
+                              "off watt": round(off_power, 2), 
+                              "off duration": off_duration,
+                              "off rpm": off_cadence,
+                              "text": text} )
+                time += duration
+                
+        rows.append( {"time": time, 
+                      "type": 'end', 
+                      "duration": 0,
+                      "repeat": '', 
+                      "on watt": '', 
+                      "on duration": '',
+                      "on rpm": '',
+                      "off watt": '', 
+                      "off duration": '',
+                      "off rpm": '',
+                      "text": ''} )            
+                
+        df = pd.DataFrame(rows)
+        df['time'] = df['time'].apply(_to_time)
+        df['duration'] = df['duration'].apply(_to_time)
+        #df['on watt'] = df['on watt'].round(2)
+        #df['off watt'] = df['off watt'].round(2)
+        display( HTML( df.to_html().replace("\\n","<br>") ) )
+        #display( df.style.background_gradient(cmap='viridis', subset=['on watt', 'off watt']) )
+    
+        return
             
