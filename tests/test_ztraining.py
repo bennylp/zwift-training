@@ -7,7 +7,7 @@ import unittest
 
 if True:
     sys.path.insert(0, os.path.abspath('..'))
-    from ztraining import ZwiftTraining
+    from ztraining import ZwiftTraining, FTPHistory
     
     
 class TestZwiftTraining(unittest.TestCase):
@@ -219,11 +219,36 @@ class TestZwiftTraining(unittest.TestCase):
         n_updates = zt.update('/home/bennylp/Desktop/Google Drive/My Drive/Personal/Cycling/activities/raw')
         print(f'Done {n_updates} updates')
 
+    def test_ftp_history(self):
+        df = pd.DataFrame([dict(dtime=pd.Timestamp('2020-01-01 10:00:00'), ftp=250), 
+                           dict(dtime=pd.Timestamp('2020-06-01 10:00:00'), ftp=260)])
+        f = FTPHistory(df)
+        self.assertIsNone(f.get_ftp('2019-06-01'))       # no data
+        self.assertEqual(f.get_ftp('2020-01-01'), 250)   # right on
+        self.assertEqual(f.get_ftp('2020-01-10'), 250)
+        self.assertEqual(f.get_ftp('2019-12-02'), 250)   # less than MAX_PRIOR_VALIDITY
+        self.assertIsNone(f.get_ftp('2019-12-01'))       # more than MAX_PRIOR_VALIDITY
+        self.assertEqual(f.get_ftp('2020-03-31'), 250)   # less than MAX_VALIDITY
+        self.assertIsNone(f.get_ftp('2020-04-01'))       # more than MAX_VALIDITY
+        self.assertEqual(f.get_ftp('2020-05-02'), 260)   # within MAX_PRIOR_VALIDITY of next FTP
+        
 
+        df = pd.DataFrame([dict(dtime=pd.Timestamp('2019-12-30 10:00:00'), ftp=240),
+                           dict(dtime=pd.Timestamp('2020-01-01 10:00:00'), ftp=250), 
+                           dict(dtime=pd.Timestamp('2020-02-01 10:00:00'), ftp=260),
+                           dict(dtime=pd.Timestamp('2020-03-01 10:00:00'), ftp=270)])
+        f = FTPHistory(df)
+        self.assertIsNone(f.get_ftp('2019-06-01'))       # no data
+        self.assertEqual(f.get_ftp('2019-12-31'), 240)
+        self.assertEqual(f.get_ftp('2020-01-01'), 250)   # right on
+        self.assertEqual(f.get_ftp('2020-01-10'), 250)
+        self.assertEqual(f.get_ftp('2019-12-02'), 240)   # less than MAX_PRIOR_VALIDITY
+        
+    
 if __name__ == '__main__':
     if False:
         suite = unittest.TestSuite()
-        suite.addTest(TestZwiftTraining("test_parse_fit_trainer_with_gps"))
+        suite.addTest(TestZwiftTraining("test_ftp_history"))
         #suite.addTest(TestZwiftTraining("test_import_files"))
         runner = unittest.TextTestRunner()
         runner.run(suite)

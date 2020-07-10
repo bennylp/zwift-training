@@ -1,1 +1,1 @@
-from .ztraining import ZwiftTraining
+from .ztraining import FTPHistory, ZwiftTraining

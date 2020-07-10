@@ -5,6 +5,7 @@ from geopy import distance
 import glob
 import json
 import math
+import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
 import os
@@ -41,6 +42,35 @@ def xml_path_val(element, tag_names, default=None):
     return xml_get_text(element)
 
 
+class FTPHistory:
+    MAX_VALIDITY = 3*30
+    MAX_PRIOR_VALIDITY = 30
+    
+    def __init__(self, ftp_history, default_ftp=None, max_validity=MAX_VALIDITY):
+        df = ftp_history[['dtime', 'ftp']].sort_values('dtime')
+        df['date'] = df['dtime'].dt.date
+        self.ftp_history = df[['date', 'ftp']].set_index('date')['ftp']
+        self.default_ftp = default_ftp
+        self.max_validity = max_validity
+        self.max_prior_validity = self.MAX_PRIOR_VALIDITY
+        
+    def get_ftp(self, dtime):
+        date = pd.Timestamp(dtime).date()
+        min_date = date - pd.Timedelta(days=self.max_validity)
+        max_date = date + pd.Timedelta(days=self.max_prior_validity)
+        ftp = self.ftp_history.loc[min_date:max_date]
+        if not len(ftp):
+            return self.default_ftp
+        
+        while len(ftp) >= 2 and ftp.index[1] <= date:
+            ftp = ftp.iloc[1:]
+        while len(ftp) >= 2 and ftp.index[-2] >= date:
+            ftp = ftp.iloc[:-1]
+        
+        assert len(ftp) <= 2
+        return ftp.iloc[0]
+        
+        
 class ZwiftTraining:
     
     DEFAULT_PROFILE_DIR = "my-ztraining-data"
@@ -223,11 +253,19 @@ class ZwiftTraining:
         fig.tight_layout()
         plt.show()
 
-    def plot_activities(self, field, interval='W-SUN', sport=None, from_dtime=None, to_dtime=None):
+    def plot_activities(self, field, interval='W-SUN', sport=None, from_dtime=None, to_dtime=None,
+                        return_df=False):
         df = self.get_activities(from_dtime=from_dtime, to_dtime=to_dtime, sport=sport)
         if df is None or not len(df):
             print('Error: no activities found')
             return
+        
+        if field=='tss':
+            ph = self.profile_history
+            ftph = FTPHistory(ph)
+            df['ftp'] = df['dtime'].apply(ftph.get_ftp)
+            calc_tss = lambda row: ZwiftTraining.avg_watt_to_tss(row['ftp'], row['power_avg'], row['mov_duration'])
+            df['tss'] = df.apply(calc_tss, axis=1)
         
         df = df.set_index('dtime')
         df = df.groupby(pd.Grouper(freq=interval, closed='left', label='left')).agg({field: 'sum'})
@@ -259,6 +297,8 @@ class ZwiftTraining:
         ax.grid()
         ax.legend()
         plt.show()
+        
+        return df if return_df else None
         
     def delete_activity(self, dtime=None, src_file=None, dry_run=False, quiet=False):
         assert dtime or src_file, "Either dtime and/or src_file must be specified"
@@ -605,6 +645,7 @@ class ZwiftTraining:
             
             df = self.calc_power_curve(from_date=from_date, to_date=to_date, max_hr=max_hr)
             if df is None:
+                print(f'No power data for period {from_date} - {to_date}')
                 continue
             df = df.drop(columns=['7',
                                   '11', '12', '13', '14',
@@ -671,7 +712,7 @@ class ZwiftTraining:
         MIN_POWER = 20
         MAX_POWER = 3000
         
-        if to_date:
+        if to_date and to_date.hour==0 and to_date.minute==0:
             to_date = to_date.replace(hour=23, minute=23, second=23)
         
         for file in sorted(files):
@@ -735,8 +776,9 @@ class ZwiftTraining:
             result[str(p)] = round(df['power'].rolling(p).mean().max(), 1)
         return result
     
-    def calc_activities_duration_in_power_zones(self, from_dtime, to_dtime, ftp=None, 
-                                                zones=[0.55, 0.75, 0.9, 1.05, 1.2, 1.5]):
+    def calc_power_zones_duration(self, from_dtime, to_dtime, ftp=None, 
+                                  zones=[0.55, 0.75, 0.9, 1.05, 1.2, 1.5],
+                                  labels=None):
         if from_dtime:
             from_dtime = pd.Timestamp(from_dtime)
             
@@ -744,6 +786,9 @@ class ZwiftTraining:
             to_dtime = pd.Timestamp(to_dtime)
             if to_dtime.hour==0 and to_dtime.minute==0:
                 to_dtime = to_dtime.replace(hour=23, minute=59, second=59)
+        
+        if labels and len(labels) != len(zones)+1:
+            raise ValueError('Length of labels must be len(zones)+1 (extra label for power greater than the last zone)')
         
         activities = self.get_activities(from_dtime=from_dtime, to_dtime=to_dtime, sport='cycling')
         activities = activities.set_index('dtime', drop=True)
@@ -756,24 +801,18 @@ class ZwiftTraining:
             print(f'Error: no profile history')
             return
         
-        def get_ftp_at(dtime):
-            MAX_FTP_VALIDITY = 3*30
-            p = ph
-            p = p[(p['dtime'] >= dtime - pd.Timedelta(days=MAX_FTP_VALIDITY)) & (p['dtime'] <= dtime)]
-            if len(p)==0:
-                print(f'No FTP data on {dtime.date()}')
-                return None
-            p_prev = p[p['dtime'] <= dtime]
-            if len(p_prev):
-                p = p_prev
-            return p.iloc[0]['ftp']
-            
-        results = []
+        ftph = FTPHistory(ph, default_ftp=ftp)
+        
+        empty = pd.DataFrame({'dummy': [0]*(len(zones)+1)}, index=range(1, len(zones)+2))
+        
+        results = [empty]
+        ftps = [] # for averaging
         zones = [0] + zones
         for dtime, adf in activities.iterrows():
-            ftp_at_that_time = ftp or get_ftp_at(dtime)
+            ftp_at_that_time = ftph.get_ftp(dtime)
             if not ftp_at_that_time:
                 continue
+            ftps.append(ftp_at_that_time)
             data = self.get_activity_data(dtime=dtime, src_file=adf['src_file'])
             if len(data)==0:
                 sys.stderr.write(f'Error: unable to find activity on {dtime}\n')
@@ -792,11 +831,59 @@ class ZwiftTraining:
             secs_in_zone = secs_in_zone.rename(columns={'dtime': dtime})
             results.append(secs_in_zone)
                 
-        result = pd.concat(results, axis=1).fillna(0)
-        #for col in result.columns:
-        #    result[col] = pd.to_timedelta(result[col], unit='s')
+        tmp = pd.concat(results, axis=1).fillna(0)
+        duration = tmp.sum(axis=1)
+        
+        if not labels:
+            labels = [f'Zone {i+1}' for i in range(len(duration))]
+        duration.index = labels
+        
+        avg_ftp = np.mean(ftps)
+        pct_min = pd.Series(zones, index=labels)
+        pct_max = pct_min.shift(-1).fillna(np.inf)
+        power_min = (pct_min * avg_ftp).round(0).astype('int')
+        power_max = (pct_max * avg_ftp).round(0)
+        
+        result = pd.DataFrame({'pct_min': pct_min,
+                               'pct_max': pct_max,
+                               'power_min': power_min,
+                               'power_max': power_max,
+                               'duration': duration})
         return result
             
+    def plot_power_zones_duration(self, from_dtime, to_dtime, ftp=None, 
+                                  zones=[0.55, 0.75, 0.9, 1.05, 1.2, 1.5],
+                                  labels=None):
+        z = self.calc_power_zones_duration(from_dtime, to_dtime, ftp=ftp, zones=zones, labels=labels)
+        fig, ax = plt.subplots(1, 1, figsize=(12, 5))
+        
+        # convert seconds to hour
+        z['duration'] = z['duration'] / 3600
+        total_hours = z['duration'].sum()
+        
+        # color gradient
+        def color_gradient(c1,c2, mix=0):
+            c1=np.array(mpl.colors.to_rgb(c1))
+            c2=np.array(mpl.colors.to_rgb(c2))
+            return mpl.colors.to_hex((1-mix)*c1 + mix*c2)        
+        
+        x = range(len(z))
+        zns = [0] + zones
+        colors = [color_gradient('blue', 'red', zns[i]/zns[-1]) for i in range(len(zns)) ]
+        bars = ax.bar(x, z['duration'], color=colors, alpha=0.5)
+        
+        # text percentage
+        for i_b, rect in enumerate(bars):
+            height = rect.get_height()
+            ax.text(rect.get_x() + rect.get_width()/2.0, height, 
+                    f'{z["duration"].iloc[i_b]/total_hours:.0%}', ha='center', va='bottom')            
+        
+        ax.set_xticks(x)
+        xlabels = [f"{idx}\n{r['pct_min']:.0%} - {r['pct_max']:.0%}\n{r['power_min']:.0f} - {r['power_max']:.0f} watt" for idx,r in z.iterrows()]
+        ax.set_xticklabels(xlabels)
+        ax.set_ylabel('Duration (Hours)')
+        ax.grid()
+        plt.show()
     
     def _train_duration_predictor1(self, quiet=False):
         df = self.get_activities(sport='cycling')
@@ -915,6 +1002,10 @@ class ZwiftTraining:
         
     @staticmethod
     def avg_watt_to_tss(ftp, avg_watt, duration):
+        if not ftp or not avg_watt:
+            return None
+        if pd.isnull(duration):
+            return None
         #np = avg_watt
         #IF = np / ftp
         #tss = (pd.Timedelta(duration).total_seconds()  * np * IF) / (ftp * 3600) * 100
