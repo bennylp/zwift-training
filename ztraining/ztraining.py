@@ -74,6 +74,9 @@ class FTPHistory:
 class ZwiftTraining:
     
     DEFAULT_PROFILE_DIR = "my-ztraining-data"
+    POWER_ZONES = [0.55, 0.75, 0.9, 1.05, 1.2, 1.5]
+    POWER_LABELS = ['Active Recovery', 'Endurance', 'Tempo', 'Lactate Threshold', 
+                    'VO2Max', 'Anaerobic', 'Neuromoscular']
     
     def __init__(self, conf_file, quiet=False):
         with open(conf_file) as f:
@@ -231,7 +234,7 @@ class ZwiftTraining:
         else:
             return False
 
-    def plot_activity(self, dtime=None, src_file=None, x='mov_duration'):
+    def plot_activity(self, dtime=None, src_file=None, x='mov_duration', ftp=None):
         assert x in ['distance', 'mov_duration', 'duration', 'dtime']
         
         df = self.get_activity_data(dtime=dtime, src_file=src_file)
@@ -241,9 +244,27 @@ class ZwiftTraining:
         cols = ['speed', 'elevation', 'hr', 'power', 'cadence', 'temp']
         cols = [col for col in cols if not pd.isnull(df[col].iloc[0])]
         
-        fig, axs = plt.subplots(nrows=len(cols), ncols=1, figsize=(15,3*len(cols)))
+        ncols = 2
+        nrows = len(cols) + 2
+        
+        fig = plt.figure(figsize=(15,3*nrows))
+        
+        # Power histogram
+        from_dtime = df['dtime'].iloc[0] - pd.Timedelta(seconds=60)
+        to_dtime = df['dtime'].iloc[-1]
+        ax = plt.subplot2grid((nrows, ncols), (0, 0), rowspan=2)
+        self.plot_power_zones_duration(from_dtime=from_dtime, to_dtime=to_dtime, labels=None, ftp=ftp, 
+                                       title='Power Duration', ax=ax, label_type='simple', 
+                                       show=False)
+        
+        # Power curve
+        ax = plt.subplot2grid((nrows, ncols), (0, 1), rowspan=2)
+        self.plot_power_curves([(from_dtime, to_dtime)], min_interval=1, max_interval=3*3600, 
+                               title='Power Curve', ax=ax, show=False)
+        
+        # Timeline
         for i_r, col in enumerate(cols):
-            ax = axs[i_r]
+            ax = plt.subplot2grid((nrows, ncols), (i_r+2, 0), colspan=2)
             df.plot(x=x, y=col, ax=ax, color=f'C{i_r}', zorder=10)
             ax.axhline(df[col].mean(), color=f'C{i_r}', linestyle='--', zorder=1)
             ax.set_ylabel(col)
@@ -629,8 +650,10 @@ class ZwiftTraining:
         records = activity_client.get_data(activity_id)
         return ZwiftTraining.parse_fit_records(records, meta) 
             
-    def plot_power_curves(self, periods, min_interval=None, max_interval=None, max_hr=None, title=None):
-        fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(15,8))
+    def plot_power_curves(self, periods, min_interval=None, max_interval=None, max_hr=None, title=None, 
+                          ax=None, show=True):
+        if ax is None:
+            _, ax = plt.subplots(nrows=1, ncols=1, figsize=(15,8))
         
         def sec_to_str(sec):
             s = f'{sec//3600:02d}:{(sec%3600)//60:02d}:{sec % 60:02d}'
@@ -697,7 +720,8 @@ class ZwiftTraining:
         ax.legend()
         if title:
             ax.set_title(title)
-        plt.show()
+        if show:
+            plt.show()
 
     def calc_power_curve(self, from_date=None, to_date=None, max_hr=None):
         if from_date:
@@ -777,15 +801,14 @@ class ZwiftTraining:
         return result
     
     def calc_power_zones_duration(self, from_dtime, to_dtime, ftp=None, 
-                                  zones=[0.55, 0.75, 0.9, 1.05, 1.2, 1.5],
-                                  labels=None):
-        if from_dtime:
-            from_dtime = pd.Timestamp(from_dtime)
+                                  zones=POWER_ZONES, labels=POWER_LABELS):
+        #if from_dtime:
+        from_dtime = pd.Timestamp(from_dtime)
             
-        if to_dtime:
-            to_dtime = pd.Timestamp(to_dtime)
-            if to_dtime.hour==0 and to_dtime.minute==0:
-                to_dtime = to_dtime.replace(hour=23, minute=59, second=59)
+        #if to_dtime:
+        to_dtime = pd.Timestamp(to_dtime)
+        if to_dtime.hour==0 and to_dtime.minute==0:
+            to_dtime = to_dtime.replace(hour=23, minute=59, second=59)
         
         if labels and len(labels) != len(zones)+1:
             raise ValueError('Length of labels must be len(zones)+1 (extra label for power greater than the last zone)')
@@ -851,11 +874,14 @@ class ZwiftTraining:
                                'duration': duration})
         return result
             
-    def plot_power_zones_duration(self, from_dtime, to_dtime, ftp=None, 
-                                  zones=[0.55, 0.75, 0.9, 1.05, 1.2, 1.5],
-                                  labels=None):
+    def plot_power_zones_duration(self, from_dtime, to_dtime, ftp=None, zones=POWER_ZONES, labels=POWER_LABELS,
+                                  title=None, ax=None, show=True, label_type='default'):
         z = self.calc_power_zones_duration(from_dtime, to_dtime, ftp=ftp, zones=zones, labels=labels)
-        fig, ax = plt.subplots(1, 1, figsize=(12, 5))
+        if z is None or not len(z):
+            return
+        
+        if ax is None:
+            _, ax = plt.subplots(1, 1, figsize=(12, 5))
         
         # convert seconds to hour
         z['duration'] = z['duration'] / 3600
@@ -879,11 +905,19 @@ class ZwiftTraining:
                     f'{z["duration"].iloc[i_b]/total_hours:.0%}', ha='center', va='bottom')            
         
         ax.set_xticks(x)
-        xlabels = [f"{idx}\n{r['pct_min']:.0%} - {r['pct_max']:.0%}\n{r['power_min']:.0f} - {r['power_max']:.0f} watt" for idx,r in z.iterrows()]
+        if label_type=='default':
+            xlabels = [f"{idx}\n{r['pct_min']:.0%} - {r['pct_max']:.0%}\n{r['power_min']:.0f} - {r['power_max']:.0f} watt" for idx,r in z.iterrows()]
+        elif label_type=='simple':
+            xlabels = z.index
+        else:
+            assert False, 'Invalid label_type parameter'
         ax.set_xticklabels(xlabels)
         ax.set_ylabel('Duration (Hours)')
+        if title:
+            ax.set_title(title)
         ax.grid()
-        plt.show()
+        if show:
+            plt.show()
     
     def _train_duration_predictor1(self, quiet=False):
         df = self.get_activities(sport='cycling')
@@ -1174,6 +1208,7 @@ class ZwiftTraining:
             'cycling': 'cycling',
             'cycling_transportation': 'cycling',
             'cycling_sport': 'cycling',
+            '17': 'cycling', # strava GPX export
             'ride': 'cycling',
             'virtualride': 'cycling',
             'virtualrun': 'running',
@@ -1563,10 +1598,6 @@ class ZwiftTraining:
                 return f'{sec//3600:}:{(sec%3600)//60:02d}:{sec%60:02d}'
         
         doc = minidom.parse(path)
-        print(f'Title      : {_getText(doc.getElementsByTagName("name")[0].childNodes)}')
-        print(f'Author     : {_getText(doc.getElementsByTagName("author")[0].childNodes)}')
-        print(f'Description: {_getText(doc.getElementsByTagName("description")[0].childNodes)}')
-        print('Workouts:')
         
         workout = doc.getElementsByTagName('workout')[0]
         time = 0
@@ -1629,23 +1660,21 @@ class ZwiftTraining:
                               "text": text} )
                 time += duration
                 
-        rows.append( {"time": time, 
-                      "type": 'end', 
-                      "duration": 0,
-                      "repeat": '', 
-                      "on watt": '', 
-                      "on duration": '',
-                      "on rpm": '',
-                      "off watt": '', 
-                      "off duration": '',
-                      "off rpm": '',
-                      "text": ''} )            
-                
         df = pd.DataFrame(rows)
+        
+        total_secs = df['duration'].sum()
+        
         df['time'] = df['time'].apply(_to_time)
         df['duration'] = df['duration'].apply(_to_time)
         #df['on watt'] = df['on watt'].round(2)
         #df['off watt'] = df['off watt'].round(2)
+        
+        print(f'Title      : {_getText(doc.getElementsByTagName("name")[0].childNodes)}')
+        print(f'Author     : {_getText(doc.getElementsByTagName("author")[0].childNodes)}')
+        print(f'Description: {_getText(doc.getElementsByTagName("description")[0].childNodes)}')
+        print(f'Duration   : {_to_time(total_secs)}')
+        print('Workouts:')
+        
         display( HTML( df.to_html().replace("\\n","<br>") ) )
         #display( df.style.background_gradient(cmap='viridis', subset=['on watt', 'off watt']) )
     
