@@ -234,6 +234,53 @@ class ZwiftTraining:
         else:
             return False
 
+    def modify_activity(self, dtime=None, src_file=None, note=None, route=None, bike=None, wheel=None):
+        if not os.path.exists(self.activity_file):
+            raise RuntimeError("Activity file does not exist. Update or import some activities first")
+        
+        selector = None
+        activities = pd.read_csv(self.activity_file, parse_dates=['dtime'])
+        if dtime is not None:
+            dtime = pd.Timestamp(dtime)
+            dtime_selector = activities['dtime']==dtime
+            if selector is None:
+                selector = dtime_selector
+            else:
+                selector = selector & dtime_selector
+        elif src_file is not None:
+            # Only need the filename, not the full path
+            assert '/' not in src_file and '\\' not in src_file
+            file_selector = activities['src_file'].str.lower()==src_file.lower()
+            if selector is None:
+                selector = file_selector
+            else:
+                selector = selector & file_selector
+                            
+        if selector is None:
+            raise ValueError("Either dtime or src_file must be specified")
+            
+        if len(activities[selector])==0:
+            raise ValueError(f'Unable to find matching activity')
+        elif len(activities[selector])>1:
+            raise ValueError(f'Found more than one matching activities')
+
+        activity = activities[selector].iloc[0]        
+        if route:
+            route_names = self._load_routes(sport=activity['sport'])['name']
+            if '*' in route:
+                route_names = route_names[ route_names.str.contains(route.replace('*', '')) ]
+                return sorted(list(route_names))
+            else:
+                route_names = route_names[ route_names==route ]
+                if len(route_names)==0:
+                    raise ValueError(f'The specified route is not found in database')
+                elif len(route_names)>1:
+                    raise ValueError(f'{len(route_names)} matching routes found')
+            activities.loc[selector, 'route'] = route
+            
+        return activities
+        
+
     def plot_activity(self, dtime=None, src_file=None, x='mov_duration', ftp=None):
         assert x in ['distance', 'mov_duration', 'duration', 'dtime']
         
@@ -569,8 +616,8 @@ class ZwiftTraining:
                     .replace(microsecond=0)
         calories = round(activity['calories'], 1) if 'calories' in activity else np.NaN
         meta = OrderedDict(dtime=dtime, sport=activity['sport'].lower(), 
-                           title=activity['name'], src_file=src_file,
-                           calories=calories)
+                           title=activity['name'], src_file=src_file, route='', bike='', 
+                           wheel='', note='', calories=calories)
         if extended:
             meta['id'] = activity['id']
             meta['duration'] = pd.Timestamp(activity['endDate']) - pd.Timestamp(activity['startDate'])
@@ -716,7 +763,14 @@ class ZwiftTraining:
         
         ax.set_ylabel('Power')
         ax.set_xlabel('Interval')
+        
+        max_y = ax.get_ylim()[1]
+        y_grid = 50
+        ax.set_yticks(np.arange(0, (max_y+y_grid-1)//y_grid*y_grid, y_grid))
+        ax.set_yticks(np.arange(0, max_y, 25), minor=True)
+        
         ax.grid()
+        #ax.grid(True, which='both', axis='y')
         ax.legend()
         if title:
             ax.set_title(title)
@@ -1023,7 +1077,6 @@ class ZwiftTraining:
             assert False, f"Unknown sport: {sport}"
 
         route = route.set_index(['world', 'route'])
-        route = route.drop(columns=['name'])
             
         return route
     
@@ -1059,13 +1112,14 @@ class ZwiftTraining:
         
         regressor = self._train_duration_predictor1(quiet=quiet)
         df = self._load_routes(sport='cycling')
+        df = df.drop(columns=['name'])
         
         # In "ride" mode, Zwift awards 20 xp per km
         XP_PER_KM = 20
         
         # In "interval", reward is 12 XP per minute. But there will be other
         # blocks such as warmups and free rides so usually we won't get the full XPs
-        XP_PER_MIN_ITV = 12 * 0.95
+        XP_PER_MIN_ITV = 12
         
         # In "workout" blocks, reward is 10 XP per minute for workout blocks and
         # 5-6 XP per minute for warmup/rampup/cooldown/rampdown blocks.
@@ -1080,14 +1134,16 @@ class ZwiftTraining:
         df.loc[df['done'] != 0, 'badge'] = 0
         
         # Predict ride duration using linear regressor
-        df['pred minutes'] = regressor.predict(df[['total distance', 'elevation', 'power_avg']]).round(1)
-        df['pred avg speed'] = (df['total distance'] / (df['pred minutes'] / 60.0)).round(1)
+        df['route minutes'] = regressor.predict(df[['total distance', 'elevation', 'power_avg']]).round(1)
+        df['pred avg speed'] = (df['total distance'] / (df['route minutes'] / 60.0)).round(1)
+        df['pred distance'] = df['pred avg speed']/60 * max_minutes
         
         # Predict the XPs received for ride and interval activities, assuming that we finish
         # the full route.
-        df['pred xp (ride)'] = (np.floor(df['total distance']) * XP_PER_KM + df['badge']).astype(int)
-        df['pred xp (interval)'] = ( np.floor( df['pred minutes'] ) * XP_PER_MIN_ITV + df['badge']).astype(int)
-        df['pred xp (workout)'] = (np.floor(df['pred minutes']) * XP_PER_MIN_WRK + df['badge']).astype(int)
+        df['route minutes'] = np.floor(df['route minutes']).astype(int)
+        df['pred xp (ride)'] = (df['pred distance'] * XP_PER_KM + df['badge']).astype(int)
+        df['pred xp (interval)'] = (max_minutes * XP_PER_MIN_ITV + df['badge']).astype(int)
+        df['pred xp (workout)'] = (max_minutes * XP_PER_MIN_WRK + df['badge']).astype(int)
         
         # Set which is the best activity (ride or interval), unless it's forced
         if not kind:
@@ -1099,24 +1155,25 @@ class ZwiftTraining:
         else:
             df['best activity'] = kind
             df['best pred xp'] = df[f'pred xp ({kind})']
-            
-        df['best pred xp/minutes'] = (df['best pred xp'] / df['pred minutes']).round(1)
         
         # Filter only routes less than the specified duration
-        df = df[ df['pred minutes'] <= max_minutes]
+        df = df[ df['route minutes'] <= max_minutes]
+        df = df.sort_values(['best pred xp'], ascending=False)
+        
+        df['best pred xp/minutes'] = (df['best pred xp'] / max_minutes).round(1)
         
         # Filter only routes with at least the specified duration
         if min_duration:
             min_minutes = pd.Timedelta(min_duration).total_seconds() / 60
-            df = df[ df['pred minutes'] > min_minutes]
+            df = df[ df['route minutes'] > min_minutes]
             
         # Display result
         columns = ['done', 'total distance', 'distance', 'lead-in', 'elevation', 'badge', 
-                   'best activity', 'best pred xp', 'power_avg',  'pred avg speed', 
-                   'pred minutes', 'best pred xp/minutes']
+                   'best activity', 'best pred xp', 'pred distance', 'pred avg speed',   
+                   'route minutes', 'best pred xp/minutes']
 
-        df = df[columns]
-        df['power_avg'] = df['power_avg'].astype(int)
+        df = df[columns].rename(columns={'elevation': 'elev'})
+        #df['power_avg'] = df['power_avg'].astype(int)
 
         #df = df.sort_values(['best pred xp/minutes'], ascending=False)
         df = df.sort_values(['best pred xp'], ascending=False)
@@ -1352,7 +1409,8 @@ class ZwiftTraining:
         df['dtime'] = df['dtime'].dt.tz_convert(pytz.timezone("Asia/Jakarta")).dt.tz_localize(None)
         df['distance'] = df['distance'].astype('float') / 1000
         meta = OrderedDict(dtime=df['dtime'].iloc[0], sport=sport, title=title, 
-                           src_file=os.path.split(path)[-1], calories=calories)
+                           src_file=os.path.split(path)[-1], route='', bike='', 
+                           wheel='', note='', calories=calories)
         return ZwiftTraining._process_activity(df, meta, copy=False)
     
     @staticmethod
@@ -1396,7 +1454,8 @@ class ZwiftTraining:
         df = pd.DataFrame(rows)
         df['dtime'] = df['dtime'].dt.tz_convert(pytz.timezone("Asia/Jakarta")).dt.tz_localize(None)
         
-        meta = OrderedDict(dtime=df['dtime'].iloc[0], sport=sport, title=title, src_file=os.path.split(path)[-1])
+        meta = OrderedDict(dtime=df['dtime'].iloc[0], sport=sport, title=title, src_file=os.path.split(path)[-1],
+                           route='', bike='', wheel='', note='')
         return ZwiftTraining._process_activity(df, meta, copy=False)
     
     @staticmethod
@@ -1407,7 +1466,8 @@ class ZwiftTraining:
         fitfile = FitFile(path)
         messages = fitfile.get_messages('record')
         records = [m.get_values() for m in messages]
-        meta = OrderedDict(dtime=None, sport='', title='', src_file=os.path.split(path)[-1])
+        meta = OrderedDict(dtime=None, sport='', title='', src_file=os.path.split(path)[-1],
+                           route='', bike='', wheel='', note='', )
         return ZwiftTraining.parse_fit_records(records, meta)
 
     @staticmethod
@@ -1580,7 +1640,7 @@ class ZwiftTraining:
         df.to_csv(self.activity_file, index=False)
     
     @staticmethod
-    def display_zwo(path, ftp):
+    def display_zwo(path, ftp, watt='watt'):
         from IPython.display import display, clear_output, Markdown, HTML
         
         def _getText(childNodes):
@@ -1597,6 +1657,30 @@ class ZwiftTraining:
             else:
                 return f'{sec//3600:}:{(sec%3600)//60:02d}:{sec%60:02d}'
         
+        
+        # https://stackoverflow.com/a/50784012/7975037
+        def colorFader(c1,c2,mix=0): #fade (linear interpolate) from color c1 (at mix=0) to c2 (mix=1)
+            c1=np.array(mpl.colors.to_rgb(c1))
+            c2=np.array(mpl.colors.to_rgb(c2))
+            return mpl.colors.to_hex((1-mix)*c1 + mix*c2)
+
+        def colorFader3(c1, c2, c3, val, mid=0.5):
+            c1=np.array(mpl.colors.to_rgb(c1))
+            c2=np.array(mpl.colors.to_rgb(c2))
+            c3=np.array(mpl.colors.to_rgb(c3))
+            if val < mid:
+                mix = val / mid
+                return mpl.colors.to_hex((1-mix)*c1 + mix*c2)
+            else:
+                val = min(val, 1)
+                mix = (val - mid) / (1 - mid)
+                return mpl.colors.to_hex((1-mix)*c2 + mix*c3)
+                
+        def power_color(s):
+            #s = s.astype(float) / (ftp * 1.2)
+            clr = s.apply(lambda v: colorFader3("green", "yellow", "red", int(v)/(ftp*1.2), mid=0.75) if v else '')
+            return [f'background-color: {c}' for c in clr]
+
         doc = minidom.parse(path)
         
         workout = doc.getElementsByTagName('workout')[0]
@@ -1617,12 +1701,14 @@ class ZwiftTraining:
                               "type": 'freeride', 
                               "duration": duration,
                               "repeat": '', 
-                              "on watt": '', 
+                              "on watt": 0, 
                               "on duration": '',
                               "on rpm": '',
-                              "off watt": '', 
+                              "off watt": 0, 
                               "off duration": '',
                               "off rpm": '',
+                              "total watt second": int(0.5*ftp*duration),
+                              "cum avg watt": 0,
                               "text": text} )            
                 
                 time += duration
@@ -1630,8 +1716,14 @@ class ZwiftTraining:
                 repeat = int(node.attributes['Repeat'].value)
                 on_duration = int(node.attributes['OnDuration'].value)
                 off_duration = int(node.attributes['OffDuration'].value)
-                on_power = float(node.attributes['OnPower'].value) * ftp
-                off_power = float(node.attributes['OffPower'].value) * ftp
+                if watt=='watt':
+                    on_power = float(node.attributes['OnPower'].value) * ftp
+                    off_power = float(node.attributes['OffPower'].value) * ftp
+                elif watt=='%ftp':
+                    on_power = round(float(node.attributes['OnPower'].value), 2)
+                    off_power = round(float(node.attributes['OffPower'].value), 2)
+                else:
+                    assert False, f'Invalid watt parameter "{watt}"'
                 if 'Cadence' in node.attributes:
                     on_cadence = f"{node.attributes['Cadence'].value}"
                     off_cadence = f"{node.attributes['CadenceResting'].value}"
@@ -1651,16 +1743,23 @@ class ZwiftTraining:
                               "type": 'interval', 
                               "duration": duration,
                               "repeat": repeat, 
-                              "on watt": round(on_power, 2), 
+                              "on watt": int(on_power), 
                               "on duration": on_duration,
                               "on rpm": on_cadence,
-                              "off watt": round(off_power, 2), 
+                              "off watt": int(off_power), 
                               "off duration": off_duration,
                               "off rpm": off_cadence,
+                              "total watt second": int((on_power*on_duration + off_power*off_duration)*repeat),
+                              "cum avg watt": 0,
                               "text": text} )
                 time += duration
                 
         df = pd.DataFrame(rows)
+        
+        watt_second = df['total watt second'].cumsum()
+        cum_duration = df['duration'].cumsum()
+        df['cum avg watt'] = (watt_second / cum_duration).astype(int)
+        df = df.drop(columns=['total watt second'])
         
         total_secs = df['duration'].sum()
         
@@ -1675,7 +1774,7 @@ class ZwiftTraining:
         print(f'Duration   : {_to_time(total_secs)}')
         print('Workouts:')
         
-        display( HTML( df.to_html().replace("\\n","<br>") ) )
+        display( HTML( df.style.apply(power_color, subset=['on watt', 'off watt']).render().replace("\\n","<br>") ) )
         #display( df.style.background_gradient(cmap='viridis', subset=['on watt', 'off watt']) )
     
         return
