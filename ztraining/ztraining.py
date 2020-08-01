@@ -77,6 +77,8 @@ class ZwiftTraining:
     POWER_ZONES = [0.55, 0.75, 0.9, 1.05, 1.2, 1.5]
     POWER_LABELS = ['Active Recovery', 'Endurance', 'Tempo', 'Lactate Threshold', 
                     'VO2Max', 'Anaerobic', 'Neuromoscular']
+    HR_ZONES = [0.6, 0.72, 0.8, 0.9 ]
+    HR_LABELS = ['Zone 1', 'Zone 2', 'Zone 3', 'Zone 4', 'Zone 5']
     
     def __init__(self, conf_file, quiet=False):
         with open(conf_file) as f:
@@ -281,43 +283,54 @@ class ZwiftTraining:
         return activities
         
 
-    def plot_activity(self, dtime=None, src_file=None, x='mov_duration', ftp=None):
+    def plot_activity(self, dtime=None, src_file=None, x='mov_duration', ftp=None, max_hr=182):
         assert x in ['distance', 'mov_duration', 'duration', 'dtime']
         
         df = self.get_activity_data(dtime=dtime, src_file=src_file)
         df['mov_duration'] = pd.to_timedelta(df['mov_duration'], unit='s')
         df['duration'] = pd.to_timedelta(df['duration'], unit='s')
         
+        if dtime is None:
+            dtime = df['dtime'].iloc[0]
+        activity = self.get_activities(from_dtime=dtime, to_dtime=dtime).iloc[0]
+        print(activity['title'])
+        
         cols = ['speed', 'elevation', 'hr', 'power', 'cadence', 'temp']
         cols = [col for col in cols if not pd.isnull(df[col].iloc[0])]
         
-        ncols = 2
+        ncols = 3
         nrows = len(cols) + 2
         
         fig = plt.figure(figsize=(15,3*nrows))
+        #fig.suptitle(activity['title'])
         
         # Power histogram
-        from_dtime = df['dtime'].iloc[0] - pd.Timedelta(seconds=60)
+        from_dtime = dtime
         to_dtime = df['dtime'].iloc[-1]
         ax = plt.subplot2grid((nrows, ncols), (0, 0), rowspan=2)
         self.plot_power_zones_duration(from_dtime=from_dtime, to_dtime=to_dtime, labels=None, ftp=ftp, 
-                                       title='Power Duration', ax=ax, label_type='simple', 
+                                       title='Power Zones', ax=ax, label_type='simple', 
                                        show=False)
-        
-        # Power curve
+
+        # HR histogram
         ax = plt.subplot2grid((nrows, ncols), (0, 1), rowspan=2)
+        self.plot_hr_zones_duration(from_dtime, to_dtime, max_hr, title='HR Zones', ax=ax, 
+                                    label_type='simple', show=False)
+
+        # Power curve
+        ax = plt.subplot2grid((nrows, ncols), (0, 2), rowspan=2)
         self.plot_power_curves([(from_dtime, to_dtime)], min_interval=1, max_interval=3*3600, 
                                title='Power Curve', ax=ax, show=False)
         
         # Timeline
         for i_r, col in enumerate(cols):
-            ax = plt.subplot2grid((nrows, ncols), (i_r+2, 0), colspan=2)
+            ax = plt.subplot2grid((nrows, ncols), (i_r+2, 0), colspan=3)
             df.plot(x=x, y=col, ax=ax, color=f'C{i_r}', zorder=10)
             ax.axhline(df[col].mean(), color=f'C{i_r}', linestyle='--', zorder=1)
             ax.set_ylabel(col)
             ax.set_title(f'{col} avg: {df[col].mean():.1f}, max: {df[col].max()}')
             ax.grid()
-            
+
         fig.tight_layout()
         plt.show()
 
@@ -680,7 +693,7 @@ class ZwiftTraining:
                     self.save_activity(df, meta, overwrite=overwrite, quiet=quiet)
                     n_updates += 1
                 except FitParseError as e:
-                    sys.stderr.write(f'Import error: error parsing activity index: {start}, id: {activity["id"]}, datetime: {meta["dtime"]}, title: "{meta["title"]}", duration: {activity["duration"]}: FitParseError: {str(e)} \n')
+                    print(f'Import error ignored: error parsing activity index: {start}, id: {activity["id"]}, datetime: {meta["dtime"]}, title: "{meta["title"]}", duration: {activity["duration"]}: FitParseError: {str(e)}')
                 
                 start += 1
             
@@ -927,7 +940,42 @@ class ZwiftTraining:
                                'power_max': power_max,
                                'duration': duration})
         return result
-            
+    
+    @staticmethod
+    def power_color_gradient(pct_ftp, opacity=1, output='css'):
+        # POWER_ZONES = [0.55, 0.75, 0.9, 1.05, 1.2, 1.5]
+        if pct_ftp < 0.3:
+            #return '#0000aa'
+            c = [0, 0, 0xaa/0xff]
+        elif pct_ftp < 0.75:
+            mix = (pct_ftp - 0.3) / (0.75 - 0.3)
+            c1=np.array(mpl.colors.to_rgb('#0000aa'))
+            c2=np.array(mpl.colors.to_rgb('#00aa00'))
+            #return mpl.colors.to_hex((1-mix)*c1 + mix*c2)
+            c = (1-mix)*c1 + mix*c2
+        elif pct_ftp < 0.9:
+            mix = (pct_ftp - 0.75) / (0.9 - 0.75)
+            c1=np.array(mpl.colors.to_rgb('#00aa00'))
+            c2=np.array(mpl.colors.to_rgb('yellow'))
+            #return mpl.colors.to_hex((1-mix)*c1 + mix*c2)
+            c = (1-mix)*c1 + mix*c2
+        else:
+            pct_ftp = min(pct_ftp, 1.2)
+            mix = (pct_ftp - 0.9) / (1.2 - 0.9)
+            c1=np.array(mpl.colors.to_rgb('yellow'))
+            c2=np.array(mpl.colors.to_rgb('red'))
+            #return mpl.colors.to_hex((1-mix)*c1 + mix*c2)
+            c = (1-mix)*c1 + mix*c2
+        
+        if output=='css':
+            c = np.round(c * 0xff, 0)
+            return f'rgba({c[0]:.0f}, {c[1]:.0f}, {c[2]:.0f}, {opacity:.1f})'
+        else:
+            c = np.round(c * 0xff, 0).astype(int)
+            #return f'({c[0]:.0f}, {c[1]:.0f}, {c[2]:.0f}, {opacity:.1f})'
+            return f'#{c[0]:02x}{c[1]:02x}{c[2]:02x}{int(opacity*0xff):02x}'
+        
+    
     def plot_power_zones_duration(self, from_dtime, to_dtime, ftp=None, zones=POWER_ZONES, labels=POWER_LABELS,
                                   title=None, ax=None, show=True, label_type='default'):
         z = self.calc_power_zones_duration(from_dtime, to_dtime, ftp=ftp, zones=zones, labels=labels)
@@ -941,16 +989,11 @@ class ZwiftTraining:
         z['duration'] = z['duration'] / 3600
         total_hours = z['duration'].sum()
         
-        # color gradient
-        def color_gradient(c1,c2, mix=0):
-            c1=np.array(mpl.colors.to_rgb(c1))
-            c2=np.array(mpl.colors.to_rgb(c2))
-            return mpl.colors.to_hex((1-mix)*c1 + mix*c2)        
         
         x = range(len(z))
         zns = [0] + zones
-        colors = [color_gradient('blue', 'red', zns[i]/zns[-1]) for i in range(len(zns)) ]
-        bars = ax.bar(x, z['duration'], color=colors, alpha=0.5)
+        colors = [ZwiftTraining.power_color_gradient(zns[i], output='mpl') for i in range(len(zns))]
+        bars = ax.bar(x, z['duration'], color=colors, alpha=0.6)
         
         # text percentage
         for i_b, rect in enumerate(bars):
@@ -967,39 +1010,160 @@ class ZwiftTraining:
             assert False, 'Invalid label_type parameter'
         ax.set_xticklabels(xlabels)
         ax.set_ylabel('Duration (Hours)')
+        dur_fmt = mpl.ticker.FuncFormatter(lambda y, pos: f'{int(y):02d}:{int((y-int(y))*60):02d}')
+        ax.yaxis.set_major_formatter(dur_fmt)
         if title:
             ax.set_title(title)
         ax.grid()
         if show:
             plt.show()
     
-    def _train_duration_predictor1(self, quiet=False):
+    def calc_hr_zones_duration(self, from_dtime, to_dtime, max_hr, 
+                               zones=HR_ZONES, labels=HR_LABELS):
+        from_dtime = pd.Timestamp(from_dtime)
+        to_dtime = pd.Timestamp(to_dtime)
+        if to_dtime.hour==0 and to_dtime.minute==0:
+            to_dtime = to_dtime.replace(hour=23, minute=59, second=59)
+        
+        if labels and len(labels) != len(zones)+1:
+            raise ValueError('Length of labels must be len(zones)+1 (extra label for power greater than the last zone)')
+        
+        activities = self.get_activities(from_dtime=from_dtime, to_dtime=to_dtime, sport='cycling')
+        activities = activities.set_index('dtime', drop=True)
+        if len(activities)==0:
+            print(f'Error: no cycling activities found between {from_dtime} - {to_dtime}')
+            return
+        
+        empty = pd.DataFrame({'dummy': [0]*(len(zones)+1)}, index=range(1, len(zones)+2))
+        
+        results = [empty]
+        zones = [0] + zones
+        for dtime, adf in activities.iterrows():
+            max_hr_at_that_time = max_hr # TODO: adjust based on age at that time?
+            data = self.get_activity_data(dtime=dtime, src_file=adf['src_file'])
+            if len(data)==0:
+                sys.stderr.write(f'Error: unable to find activity on {dtime}\n')
+                continue
+            #if pd.isnull(data['hr'].iloc[0]):
+            #    continue
+            data = data[ data['hr'].notnull() ]
+            data['%hr'] = data['hr'] / max_hr_at_that_time
+            data['hr_zone'] = None
+            for i_z in range(len(zones)):
+                mi = zones[i_z]
+                ma = zones[i_z+1] if i_z < len(zones)-1 else 1e10
+                data.loc[ ((data['%hr'] > mi) & (data['%hr'] <= ma)), 'hr_zone' ] = i_z+1
+
+            secs_in_zone = data.groupby('hr_zone').agg({'dtime': 'count'})
+            secs_in_zone = secs_in_zone.rename(columns={'dtime': dtime})
+            results.append(secs_in_zone)
+                
+        tmp = pd.concat(results, axis=1).fillna(0)
+        duration = tmp.sum(axis=1).astype(int)
+        
+        if not labels:
+            labels = [f'Zone {i+1}' for i in range(len(duration))]
+        duration.index = labels
+        
+        pct_min = pd.Series(zones, index=labels)
+        pct_max = pct_min.shift(-1).fillna(np.inf)
+        hr_min = (pct_min * max_hr).round(0).astype('int')
+        hr_max = (pct_max * max_hr).round(0)
+        
+        result = pd.DataFrame({'pct_min': pct_min,
+                               'pct_max': pct_max,
+                               'hr_min': hr_min,
+                               'hr_max': hr_max,
+                               'duration': duration})
+        return result
+    
+    def plot_hr_zones_duration(self, from_dtime, to_dtime, max_hr, zones=HR_ZONES, labels=HR_LABELS,
+                               title=None, ax=None, show=True, label_type='default'):
+        z = self.calc_hr_zones_duration(from_dtime, to_dtime, max_hr, zones=zones, labels=labels)
+        if z is None or not len(z):
+            return
+        
+        if ax is None:
+            _, ax = plt.subplots(1, 1, figsize=(12, 5))
+        
+        # convert seconds to hour
+        z['duration'] = z['duration'] / 3600
+        total_hours = z['duration'].sum()
+        
+        
+        x = range(len(z))
+        zns = [0] + zones
+        colors = [ZwiftTraining.power_color_gradient(zns[i], output='mpl') for i in range(len(zns))]
+        bars = ax.bar(x, z['duration'], color=colors, alpha=0.6)
+        
+        # text percentage
+        for i_b, rect in enumerate(bars):
+            height = rect.get_height()
+            ax.text(rect.get_x() + rect.get_width()/2.0, height, 
+                    f'{z["duration"].iloc[i_b]/total_hours:.0%}', ha='center', va='bottom')            
+        
+        ax.set_xticks(x)
+        if label_type=='default':
+            xlabels = [f"{idx}\n{r['pct_min']:.0%} - {r['pct_max']:.0%}\n{r['hr_min']:.0f} - {r['hr_max']:.0f}" for idx,r in z.iterrows()]
+        elif label_type=='simple':
+            xlabels = z.index
+        else:
+            assert False, 'Invalid label_type parameter'
+        ax.set_xticklabels(xlabels)
+        ax.set_ylabel('Duration (Hours)')
+        dur_fmt = mpl.ticker.FuncFormatter(lambda y, pos: f'{int(y):02d}:{int((y-int(y))*60):02d}')
+        ax.yaxis.set_major_formatter(dur_fmt)
+        if title:
+            ax.set_title(title)
+        ax.grid()
+        if show:
+            plt.show()
+    
+    def _train_duration_predictor1(self, n=10, quiet=False):
         df = self.get_activities(sport='cycling')
         df = df[ (df['distance'] > 5) & (df['elevation'] > 1) & (df['power_avg'] > 5)]
-        df = df.sort_values('dtime').tail(10)
+        df = df.sort_values('dtime').tail(n)
         df = df.copy()
-        if len(df) < 10:
-            sys.stderr.write('Not enough data to make prediction\n')
+        if len(df) < n:
+            sys.stderr.write(f'Not enough activities to make prediction (requires {n})\n')
             return None
         
         if not quiet:
             print(f'Training with {len(df)} datapoints from {df["dtime"].iloc[0]}')
         
         df['minutes'] = pd.to_timedelta(df['mov_duration']).dt.total_seconds() / 60
-        
-        X = df[['distance', 'elevation', 'power_avg']]
+        df['dist/power'] = df['distance'] / df['power_avg']
+        df['ele/power'] = df['elevation'] / df['power_avg']
+        features = ['distance', 'elevation', 'dist/power']
+
+        X = df[features]
         y = df['minutes']
-        reg = LinearRegression().fit(X, y)
+        reg = LinearRegression(fit_intercept=False).fit(X, y)
         
         if not quiet:
             pred = reg.predict(X)
-            mse = np.mean( (pred - y)**2 )
-            me = np.mean( mse ** 0.5 )
+            err = np.abs(pred - y)
+            rep = pd.DataFrame({'y': np.round(y,1), 'pred': np.round(pred,1), 'err': np.round(err,1), 'pcterr': np.round(err/y, 2)})
+            #print(rep)
+            me = np.mean(err)
             me_pct = np.mean( np.abs(pred-y) / y )
-            print(f'Mean error: {me:.1f} minutes')
-            print(f'Mean error: {me_pct:.1%}')
+            coefs = list(zip(features, [round(c, 3) for c in reg.coef_]))
+            #coefs.append(('intercept', round(reg.intercept_, 2)))
+            print(f'Coefs: {coefs}')
+            print(f'Mean error: {rep["err"].mean():.1f} minutes ({rep["pcterr"].mean():.1%})')
+            print(f'Max error : {rep["err"].max():.1f} minutes ({rep["pcterr"].max():.1%})')
         
         return reg        
+    
+    @staticmethod
+    def _predict_duration1(regressor, df):
+        df = df.copy()
+        assert len(df.columns) == 3
+        df.columns = ['distance', 'elevation', 'power_avg']
+        df['dist/power'] = df['distance'] / df['power_avg']
+        df = df.drop(columns=['power_avg'])
+        #df['ele/power'] = df['elevation'] / df['power_avg']
+        return regressor.predict(df).round(1)
     
     @staticmethod
     def _convert_to_segments(df, segment_length_meters=100):
@@ -1110,7 +1274,7 @@ class ZwiftTraining:
             if not quiet:
                 print(f'Avg watt: {avg_watt:.0f}')
         
-        regressor = self._train_duration_predictor1(quiet=quiet)
+        regressor = self._train_duration_predictor1(n=20, quiet=quiet)
         df = self._load_routes(sport='cycling')
         df = df.drop(columns=['name'])
         
@@ -1134,7 +1298,8 @@ class ZwiftTraining:
         df.loc[df['done'] != 0, 'badge'] = 0
         
         # Predict ride duration using linear regressor
-        df['route minutes'] = regressor.predict(df[['total distance', 'elevation', 'power_avg']]).round(1)
+        #df['route minutes'] = regressor.predict(df[['total distance', 'elevation', 'power_avg']]).round(1)
+        df['route minutes'] = ZwiftTraining._predict_duration1(regressor, df[['total distance', 'elevation', 'power_avg']])
         df['pred avg speed'] = (df['total distance'] / (df['route minutes'] / 60.0)).round(1)
         df['pred distance'] = df['pred avg speed']/60 * max_minutes
         
@@ -1678,8 +1843,9 @@ class ZwiftTraining:
                 
         def power_color(s):
             #s = s.astype(float) / (ftp * 1.2)
-            clr = s.apply(lambda v: colorFader3("green", "yellow", "red", int(v)/(ftp*1.2), mid=0.75) if v else '')
-            return [f'background-color: {c}' for c in clr]
+            #clr = s.apply(lambda v: colorFader3("green", "yellow", "red", int(v)/(ftp*1.2), mid=0.75) if v else '')
+            clr = s.apply(lambda v: ZwiftTraining.power_color_gradient(float(v)/ftp, opacity=0.5) if v else '')
+            return [f'background-color: {c}; color: black;' for c in clr]
 
         doc = minidom.parse(path)
         
