@@ -46,14 +46,14 @@ class FTPHistory:
     MAX_VALIDITY = 3*30
     MAX_PRIOR_VALIDITY = 30
     
-    def __init__(self, ftp_history, default_ftp=None, max_validity=MAX_VALIDITY):
-        df = ftp_history[['dtime', 'ftp']].sort_values('dtime')
+    def __init__(self, profile_history, default_ftp=None, max_validity=MAX_VALIDITY):
+        df = profile_history[['dtime', 'ftp']].sort_values('dtime')
         df['date'] = df['dtime'].dt.date
         self.ftp_history = df[['date', 'ftp']].set_index('date')['ftp']
         self.default_ftp = default_ftp
         self.max_validity = max_validity
         self.max_prior_validity = self.MAX_PRIOR_VALIDITY
-        
+    
     def get_ftp(self, dtime):
         date = pd.Timestamp(dtime).date()
         min_date = date - pd.Timedelta(days=self.max_validity)
@@ -1119,6 +1119,59 @@ class ZwiftTraining:
         if show:
             plt.show()
     
+    def calc_training_form(self, sport='cycling', from_dtime=None, to_dtime=None, 
+                           fatigue_period=7, fitness_period=42):
+        assert sport=='cycling', "Only 'cycling' is supported for now"
+        
+        if from_dtime:
+            from_dtime = pd.Timestamp(from_dtime) - pd.Timedelta(days=fitness_period+1)
+            
+        activities = self.get_activities(sport=sport, from_dtime=from_dtime, to_dtime=to_dtime)
+        activities = activities[['dtime', 'mov_duration', 'power_avg']].set_index('dtime')
+    
+        ftph = FTPHistory(self.profile_history)
+        def _calc_tss(row):
+            d = row.name
+            return self.avg_watt_to_tss(ftph.get_ftp(d), row['power_avg'], row['mov_duration'])
+        
+        activities['tss'] = activities.apply(_calc_tss, axis=1)
+        
+        #if activities.index[-1] < pd.Timestamp.now().normalize():
+        # Add present
+        activities.loc[pd.Timestamp.now(), 'tss'] = 0
+        
+        activities['Fitness (CTL)'] = activities['tss'].shift().ewm(halflife=pd.Timedelta(days=fitness_period),
+                                                                    times=activities.index).mean()
+        activities['Fatigue (ATL)'] = activities['tss'].shift().ewm(halflife=pd.Timedelta(days=fatigue_period),
+                                                                    times=activities.index).mean()
+        activities['Form (TSB)'] = activities['Fitness (CTL)'] - activities['Fatigue (ATL)']
+        return activities
+    
+    def plot_training_form(self, sport='cycling', from_dtime=None, to_dtime=None, 
+                           fatigue_period=7, fitness_period=42, ax=None, show=True):
+        df = self.calc_training_form(sport=sport, from_dtime=from_dtime, to_dtime=to_dtime,
+                                     fatigue_period=fatigue_period, fitness_period=fitness_period)
+        
+        if ax is None:
+            _, ax = plt.subplots(1, 1, figsize=(15, 6))
+        
+        print('Current form:', df.index[-1], df.iloc[-1]['Form (TSB)'].round(2))
+        
+        # TSS bar
+        handles = [plt.Rectangle((0,0),1,1, color='gray', alpha=0.1)]
+        ax.bar(df.index, df['tss'], alpha=0.1, color='gray', zorder=1)
+        
+        # metrics
+        metrics = ['Fitness (CTL)', 'Fatigue (ATL)', 'Form (TSB)']
+        for m in metrics:
+            handles.extend( ax.plot(df.index, df[m], zorder=10) )
+        
+        ax.grid()
+        ax.set_title('Form (Training Stress Balance)')
+        ax.legend(handles, ['Daily TSS']+metrics)
+        if show:
+            plt.show()
+        
     def _train_duration_predictor1(self, n=10, quiet=False):
         df = self.get_activities(sport='cycling')
         df = df[ (df['distance'] > 5) & (df['elevation'] > 1) & (df['power_avg'] > 5)]
