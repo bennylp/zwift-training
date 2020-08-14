@@ -18,6 +18,13 @@ from xml.dom import minidom
 from zwift import Client
 
 
+def sec_to_str(sec):
+    s = f'{sec//3600:02d}:{(sec%3600)//60:02d}:{sec % 60:02d}'
+    s = re.sub(r'^00:', '', s)
+    s = re.sub(r'^00:', '', s)
+    return s
+
+
 def xml_get_text(element):
     rc = []
     for node in element.childNodes:
@@ -715,12 +722,6 @@ class ZwiftTraining:
         if ax is None:
             _, ax = plt.subplots(nrows=1, ncols=1, figsize=(15,8))
         
-        def sec_to_str(sec):
-            s = f'{sec//3600:02d}:{(sec%3600)//60:02d}:{sec % 60:02d}'
-            s = re.sub(r'^00:', '', s)
-            s = re.sub(r'^00:', '', s)
-            return s
-        
         power_intervals = None
         for i_period, (from_date, to_date) in enumerate(periods):
             from_date = pd.Timestamp(from_date)
@@ -1123,11 +1124,8 @@ class ZwiftTraining:
                            fatigue_period=7, fitness_period=42):
         assert sport=='cycling', "Only 'cycling' is supported for now"
         
-        if from_dtime:
-            from_dtime = pd.Timestamp(from_dtime) - pd.Timedelta(days=fitness_period+1)
-            
-        activities = self.get_activities(sport=sport, from_dtime=from_dtime, to_dtime=to_dtime)
-        activities = activities[['dtime', 'mov_duration', 'power_avg']].set_index('dtime')
+        activities = self.get_activities(sport=sport, to_dtime=to_dtime)
+        activities = activities[['dtime', 'mov_duration', 'power_avg']].set_index('dtime').dropna()
     
         ftph = FTPHistory(self.profile_history)
         def _calc_tss(row):
@@ -1140,11 +1138,14 @@ class ZwiftTraining:
         # Add present
         activities.loc[pd.Timestamp.now(), 'tss'] = 0
         
-        activities['Fitness (CTL)'] = activities['tss'].shift().ewm(halflife=pd.Timedelta(days=fitness_period),
-                                                                    times=activities.index).mean()
-        activities['Fatigue (ATL)'] = activities['tss'].shift().ewm(halflife=pd.Timedelta(days=fatigue_period),
-                                                                    times=activities.index).mean()
+        activities = activities[['tss']].resample('1D').sum()
+        activities['Fitness (CTL)'] = activities['tss'].shift().ewm(span=fitness_period).mean()
+        activities['Fatigue (ATL)'] = activities['tss'].shift().ewm(span=fatigue_period).mean()
         activities['Form (TSB)'] = activities['Fitness (CTL)'] - activities['Fatigue (ATL)']
+        
+        if from_dtime:
+            activities = activities.loc[from_dtime:,:]
+        
         return activities
     
     def plot_training_form(self, sport='cycling', from_dtime=None, to_dtime=None, 
@@ -1317,7 +1318,7 @@ class ZwiftTraining:
         return tss
 
     def best_cycling_route(self, max_duration, avg_watt=None, tss=None, ftp=None, min_duration=None, 
-                           kind=None, done=None, quiet=False):
+                           kind=None, done=None, train_n=20, meetup=False, quiet=False):
         assert (avg_watt is not None) or (tss is not None and ftp is not None)
         assert kind is None or kind in ['ride', 'interval', 'workout']
         max_minutes = pd.Timedelta(max_duration).total_seconds() / 60
@@ -1327,9 +1328,11 @@ class ZwiftTraining:
             if not quiet:
                 print(f'Avg watt: {avg_watt:.0f}')
         
-        regressor = self._train_duration_predictor1(n=20, quiet=quiet)
+        regressor = self._train_duration_predictor1(n=train_n, quiet=quiet)
         df = self._load_routes(sport='cycling')
         df = df.drop(columns=['name'])
+        if meetup:
+            df['total distance'] = df['distance']
         
         # In "ride" mode, Zwift awards 20 xp per km
         XP_PER_KM = 20
@@ -1378,17 +1381,19 @@ class ZwiftTraining:
         df = df[ df['route minutes'] <= max_minutes]
         df = df.sort_values(['best pred xp'], ascending=False)
         
-        df['best pred xp/minutes'] = (df['best pred xp'] / max_minutes).round(1)
+        df['best pred xp /minutes'] = (df['best pred xp'] / max_minutes).round(1)
         
         # Filter only routes with at least the specified duration
         if min_duration:
             min_minutes = pd.Timedelta(min_duration).total_seconds() / 60
             df = df[ df['route minutes'] > min_minutes]
-            
+        
+        df['route time'] = df['route minutes'].apply(lambda mnt: sec_to_str(mnt*60))
+        
         # Display result
         columns = ['done', 'total distance', 'distance', 'lead-in', 'elevation', 'badge', 
                    'best activity', 'best pred xp', 'pred distance', 'pred avg speed',   
-                   'route minutes', 'best pred xp/minutes']
+                   'route time', 'best pred xp /minutes']
 
         df = df[columns].rename(columns={'elevation': 'elev'})
         #df['power_avg'] = df['power_avg'].astype(int)
@@ -1400,17 +1405,59 @@ class ZwiftTraining:
             
         return df
 
-    def load_routes(self):
-        route = pd.read_csv('data/routes.csv').set_index('route')
-        route['done'] = False
+    def list_routes(self, world=None, route=None, done=None):
+        df = pd.read_csv('data/routes.csv').set_index('name')
+        df['done'] = False
         
         inventory = pd.read_csv(os.path.join(self.profile_dir, 'inventories.csv'))
         inventory = inventory[ inventory['type'] == 'route' ]
         
         for idx, row in inventory.iterrows():
-            route.loc[row['name'], 'done'] = True
+            df.loc[row['name'], 'done'] = True
+        
+        if world:
+            df = df[ df['world'].str.lower().str.contains(world.lower()) ]
+        if route:
+            df = df[ df['route'].str.lower().str.contains(route.lower()) ]
+        if done is not None:
+            df = df[ df['done']==done ]
             
-        return route
+        return df
+
+    def set_inventory(self, kind, value):
+        assert kind in ['route', 'frame', 'wheels']
+
+        if kind == 'route':
+            master = pd.read_csv('data/routes.csv')
+        elif kind == 'frame':
+            master = pd.read_csv('data/frames.csv')
+        elif kind == 'wheels':
+            master = pd.read_csv('data/wheels.csv')
+        else:
+            assert False, f"Invalid kind '{kind}'"
+        
+        if '*' in value:
+            master = master[ master['name'].str.lower().str.contains(value.replace('*', '').lower()) ]
+            return master
+        
+        found = master[ master['name']==value ]
+        if not len(found):
+            raise ValueError(f'{kind} "{value}" not found')
+
+        inventory = pd.read_csv(os.path.join(self.profile_dir, 'inventories.csv'),
+                                parse_dates=['dtime'])
+
+        found = inventory[ inventory['name']==value ]
+        if len(found):
+            raise ValueError(f'{kind} "{value}" already exist')
+        
+        inventory = inventory.append({'type': kind, 
+                                      'name': value, 
+                                      'dtime': pd.Timestamp.now().replace(microsecond=0)}, 
+                                     ignore_index=True)
+        inventory.to_csv(os.path.join(self.profile_dir, 'inventories.csv'), index=False)
+        print(f'{kind} {value} successfully added to inventory')
+        return inventory
 
     @staticmethod
     def _process_activity(df, meta, min_kph=3, copy=True):
