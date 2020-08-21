@@ -18,10 +18,11 @@ from xml.dom import minidom
 from zwift import Client
 
 
-def sec_to_str(sec):
+def sec_to_str(sec, full=False):
     s = f'{sec//3600:02d}:{(sec%3600)//60:02d}:{sec % 60:02d}'
-    s = re.sub(r'^00:', '', s)
-    s = re.sub(r'^00:', '', s)
+    if not full:
+        s = re.sub(r'^00:', '', s)
+        s = re.sub(r'^00:', '', s)
     return s
 
 
@@ -1139,8 +1140,8 @@ class ZwiftTraining:
         activities.loc[pd.Timestamp.now(), 'tss'] = 0
         
         activities = activities[['tss']].resample('1D').sum()
-        activities['Fitness (CTL)'] = activities['tss'].shift().ewm(span=fitness_period).mean()
-        activities['Fatigue (ATL)'] = activities['tss'].shift().ewm(span=fatigue_period).mean()
+        activities['Fitness (CTL)'] = activities['tss'].ewm(span=fitness_period).mean()
+        activities['Fatigue (ATL)'] = activities['tss'].ewm(span=fatigue_period).mean()
         activities['Form (TSB)'] = activities['Fitness (CTL)'] - activities['Fatigue (ATL)']
         
         if from_dtime:
@@ -1272,7 +1273,7 @@ class ZwiftTraining:
             print(f"Predicted duration: {dur}")
         return dur
     
-    def _load_routes(self, sport=None):
+    def _load_routes(self, sport=None, allow_events=False, worlds=[]):
         route = pd.read_csv('data/routes.csv')
         route['total distance'] = route['distance'] + route['lead-in']
         route['done'] = 0
@@ -1280,7 +1281,8 @@ class ZwiftTraining:
         route['badge'] = route['badge'].fillna(0)
         route['elevation'] = route['elevation'].fillna(0)
         
-        route = route[ ~route['restriction'].str.contains('Event') ]
+        if not allow_events:
+            route = route[ ~route['restriction'].str.contains('Event') ]
         
         inventories_file = os.path.join(self.profile_dir, 'inventories.csv')
         if os.path.exists(inventories_file):
@@ -1294,6 +1296,9 @@ class ZwiftTraining:
         elif sport:
             assert False, f"Unknown sport: {sport}"
 
+        if worlds:
+            for world in worlds:
+                route = route[ route['world'].str.lower().str.contains(world.lower()) ]
         route = route.set_index(['world', 'route'])
             
         return route
@@ -1318,7 +1323,8 @@ class ZwiftTraining:
         return tss
 
     def best_cycling_route(self, max_duration, avg_watt=None, tss=None, ftp=None, min_duration=None, 
-                           kind=None, done=None, train_n=20, meetup=False, quiet=False):
+                           kind=None, worlds=[], done=None, train_n=20, meetup=False, 
+                           allow_events=False, quiet=False):
         assert (avg_watt is not None) or (tss is not None and ftp is not None)
         assert kind is None or kind in ['ride', 'interval', 'workout']
         max_minutes = pd.Timedelta(max_duration).total_seconds() / 60
@@ -1329,7 +1335,7 @@ class ZwiftTraining:
                 print(f'Avg watt: {avg_watt:.0f}')
         
         regressor = self._train_duration_predictor1(n=train_n, quiet=quiet)
-        df = self._load_routes(sport='cycling')
+        df = self._load_routes(sport='cycling', worlds=worlds, allow_events=allow_events)
         df = df.drop(columns=['name'])
         if meetup:
             df['total distance'] = df['distance']
@@ -1388,7 +1394,7 @@ class ZwiftTraining:
             min_minutes = pd.Timedelta(min_duration).total_seconds() / 60
             df = df[ df['route minutes'] > min_minutes]
         
-        df['route time'] = df['route minutes'].apply(lambda mnt: sec_to_str(mnt*60))
+        df['route time'] = df['route minutes'].apply(lambda mnt: sec_to_str(mnt*60, full=True))
         
         # Display result
         columns = ['done', 'total distance', 'distance', 'lead-in', 'elevation', 'badge', 
