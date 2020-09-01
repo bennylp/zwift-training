@@ -1,0 +1,31 @@
+<workout_file>
+    <author>2 Jelly Legs</author>
+    <name>Tempo 5</name>
+    <description>Tempo 5 minutes interval</description>
+    <sportType>bike</sportType>
+    <tags>
+        <tag name="Interval"/>
+    </tags>
+    <workout>
+        <FreeRide Duration="32" FlatRoad="1"/>
+        <IntervalsT Repeat="2" OnDuration="30" OffDuration="31" OnPower="0.43243244" OffPower="0.43243244" pace="1128505344" OverUnder="1"/>
+        <IntervalsT Repeat="2" OnDuration="30" OffDuration="31" OnPower="0.48648649" OffPower="0.48648649" pace="1128505344" OverUnder="1"/>
+        <IntervalsT Repeat="2" OnDuration="30" OffDuration="31" OnPower="0.54055" OffPower="0.54055" pace="1128505344" OverUnder="1"/>
+        <IntervalsT Repeat="2" OnDuration="30" OffDuration="31" OnPower="0.64865" OffPower="0.5945946" pace="1128505344" OverUnder="1" Cadence="85" CadenceResting="65"/>
+        <IntervalsT Repeat="4" OnDuration="60" OffDuration="31" OnPower="0.756757" OffPower="0.5945946" pace="1128505344" OverUnder="1" Cadence="100" CadenceResting="80"/>
+        <IntervalsT Repeat="2" OnDuration="61" OffDuration="60" OnPower="0.64865" OffPower="0.64865" pace="1128505344" OverUnder="1" />
+        <IntervalsT Repeat="2" OnDuration="300" OffDuration="123" OnPower="0.8" OffPower="0.64865" pace="1128505344" OverUnder="1" />
+        <IntervalsT Repeat="2" OnDuration="300" OffDuration="123" OnPower="0.8" OffPower="0.64865" pace="1128505344" OverUnder="1" />
+        <IntervalsT Repeat="2" OnDuration="300" OffDuration="123" OnPower="0.8" OffPower="0.64865" pace="1128505344" OverUnder="1" />
+        <IntervalsT Repeat="2" OnDuration="300" OffDuration="123" OnPower="0.8" OffPower="0.64865" pace="1128505344" OverUnder="1" />
+        <IntervalsT Repeat="2" OnDuration="300" OffDuration="123" OnPower="0.8" OffPower="0.64865" pace="1128505344" OverUnder="1" />
+        <IntervalsT Repeat="2" OnDuration="300" OffDuration="123" OnPower="0.8" OffPower="0.64865" pace="1128505344" OverUnder="1" />
+        <IntervalsT Repeat="2" OnDuration="75" OffDuration="76" OnPower="0.64865" OffPower="0.64865" pace="1128505344" OverUnder="1"/>
+        <IntervalsT Repeat="2" OnDuration="75" OffDuration="76" OnPower="0.64865" OffPower="0.64865" pace="1128505344" OverUnder="1"/>
+        <IntervalsT Repeat="2" OnDuration="75" OffDuration="76" OnPower="0.64865" OffPower="0.64865" pace="1128505344" OverUnder="1"/>
+        <IntervalsT Repeat="2" OnDuration="30" OffDuration="31" OnPower="0.54055" OffPower="0.54055" pace="1128505344" OverUnder="1"/>
+        <IntervalsT Repeat="2" OnDuration="30" OffDuration="31" OnPower="0.48648649" OffPower="0.48648649" pace="1128505344" OverUnder="1"/>
+        <IntervalsT Repeat="2" OnDuration="30" OffDuration="31" OnPower="0.43243244" OffPower="0.43243244" pace="1128505344" OverUnder="1"/>
+    </workout>
+</workout_file>
+                                             

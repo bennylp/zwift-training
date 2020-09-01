@@ -13,6 +13,7 @@ import pandas as pd
 import pytz
 import re
 from sklearn.linear_model import LinearRegression
+from sklearn.svm import SVR
 import sys
 from xml.dom import minidom
 from zwift import Client
@@ -358,7 +359,7 @@ class ZwiftTraining:
         
         df = df.set_index('dtime')
         df = df.groupby(pd.Grouper(freq=interval, closed='left', label='left')).agg({field: 'sum'})
-        
+
         fig, ax = plt.subplots(1, 1, figsize=(15,6))
         
         title = field.replace('_', ' ').title()
@@ -373,8 +374,8 @@ class ZwiftTraining:
         elif len(x) > 5:
             width = 3
         else:
-            width = 3
-            
+            width = 5
+        
         ax.bar(x, df[field], label=title, width=width, align='center', color='darkgreen', alpha=0.5)
         
         ax.set_xticks(x)
@@ -747,7 +748,13 @@ class ZwiftTraining:
             if max_interval is not None:
                 cols = [col for col in df.columns if int(col) <= max_interval]
                 df = df[cols]
-    
+
+            for col in df.columns:
+                arr = df[col]
+                nc = sum(arr.isnull())
+                if nc == len(df):
+                    df = df.drop(columns=[col])
+                    
             power_cols = [col for col in df.columns]
             power_intervals = [int(col) for col in power_cols]
             power_interval_labels = [sec_to_str(i) for i in power_intervals]
@@ -931,6 +938,9 @@ class ZwiftTraining:
         duration.index = labels
         
         avg_ftp = np.mean(ftps)
+        if pd.isnull(avg_ftp):
+            raise ValueError('No FTP value is found for the specified period. Please manually specify ftp argument')
+        
         pct_min = pd.Series(zones, index=labels)
         pct_max = pct_min.shift(-1).fillna(np.inf)
         power_min = (pct_min * avg_ftp).round(0).astype('int')
@@ -1221,7 +1231,7 @@ class ZwiftTraining:
         return regressor.predict(df).round(1)
     
     @staticmethod
-    def _convert_to_segments(df, segment_length_meters=100):
+    def _convert_to_segments(df, segment_length_meters=75):
         df['segment_num'] = (df['distance'] * 1000 / segment_length_meters).astype('int')
         agg_rules = {'distance': 'last', 'elevation': 'last', 'mov_duration': 'last'}
         if 'power' in df.columns:
@@ -1243,18 +1253,34 @@ class ZwiftTraining:
         df = self.get_activity_data(dtime=activity_dtime)
         segments = ZwiftTraining._convert_to_segments(df)
 
+        # Shuffle
+        segments = segments.sample(frac=1)
+
+        test_len = min(50, int(len(segments)/4))
+
         X = segments[['distance', 'elevation', 'power_avg']]
         y = segments['seconds']
-        model = LinearRegression().fit(X, y)
+        
+        X_train, y_train = X.iloc[:-test_len], y.iloc[:-test_len]
+        X_test, y_test = X.iloc[-test_len:], y.iloc[-test_len:]
         
         if not quiet:
-            pred = model.predict(X)
-            y_dur1 = df['mov_duration'].iloc[-1]
-            y_dur2 = segments['seconds'].sum()
-            pred_dur = pred.sum()
-            diff = abs(pred_dur - y_dur2)
-            err = diff / y_dur2
-            print(f'Regression: duration: {y_dur2}, prediction: {pred_dur}. error: {diff} secs ({err:.1%})')
+            print(f'Train: {len(X_train)} samples, test: {len(X_test)} samples')
+        
+        model = LinearRegression().fit(X_train, y_train)
+        #model = SVR(kernel='poly', cache_size=1000, degree=3).fit(X_train, y_train)
+        #model = SVR(kernel='linear', cache_size=1000).fit(X_train, y_train)
+        
+        if not quiet:
+            datasets = [('Train', X_train, y_train), ('Test', X_test, y_test)]
+            for title, ds_x, ds_y in datasets:
+                pred = model.predict(ds_x)
+                pred_total = pred.sum()
+                y_total = ds_y.sum()
+                diff = abs(pred_total - y_total)
+                err = diff / y_total
+                print(f'{title}: duration: {y_total:.0f} secs, prediction: {pred_total:.0f} secs')
+                print(f'{title} error: {diff:.0f} secs ({err:.0%})')
         
         return model
 
@@ -1430,6 +1456,19 @@ class ZwiftTraining:
             
         return df
 
+    def list_inventory(self, kind, value):
+        if '*' not in value:
+            value += '*'
+        return self.set_inventory(kind, value)
+
+    def get_inventory(self, kind=None):
+        df = pd.read_csv(os.path.join(self.profile_dir, 'inventories.csv'),
+                                      parse_dates=['dtime'])
+        if kind:
+            df = df[ df['type']==kind ]
+            
+        return df
+                
     def set_inventory(self, kind, value):
         assert kind in ['route', 'frame', 'wheels']
 

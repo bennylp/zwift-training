@@ -1,6 +1,8 @@
 fitparse
 geopy
+notebook
 numpy
 pandas
+pytz
 sklearn
 zwift-client
