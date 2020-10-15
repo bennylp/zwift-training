@@ -910,15 +910,14 @@ class ZwiftTraining:
         for dtime, adf in activities.iterrows():
             ftp_at_that_time = ftph.get_ftp(dtime)
             if not ftp_at_that_time:
+                print(f'No FTP at {dtime}')
                 continue
             ftps.append(ftp_at_that_time)
             data = self.get_activity_data(dtime=dtime, src_file=adf['src_file'])
             if len(data)==0:
                 sys.stderr.write(f'Error: unable to find activity on {dtime}\n')
                 continue
-            if pd.isnull(data['power'].iloc[0]):
-                continue
-            data = data[ data['power'] != 0 ]
+            data = data[ (data['power'].notnull()) & (data['power'] != 0) ]
             data['%ftp'] = data['power'] / ftp_at_that_time
             data['power_zone'] = None
             for i_z in range(len(zones)):
@@ -1009,9 +1008,11 @@ class ZwiftTraining:
         
         # text percentage
         for i_b, rect in enumerate(bars):
+            break
             height = rect.get_height()
+            txt = f'{z["duration"].iloc[i_b]/total_hours:.0%}'
             ax.text(rect.get_x() + rect.get_width()/2.0, height, 
-                    f'{z["duration"].iloc[i_b]/total_hours:.0%}', ha='center', va='bottom')            
+                    txt, ha='center', va='bottom')            
         
         ax.set_xticks(x)
         if label_type=='default':
