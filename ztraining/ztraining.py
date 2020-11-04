@@ -1,21 +1,23 @@
 from collections import OrderedDict
 import datetime
-from fitparse import FitFile, FitParseError
-from geopy import distance
 import glob
 import json
 import math
+import os
+import re
+import sys
+from xml.dom import minidom
+
+import pytz
+from sklearn.linear_model import LinearRegression
+from sklearn.svm import SVR
+
+from fitparse import FitFile, FitParseError
+from geopy import distance
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
-import os
 import pandas as pd
-import pytz
-import re
-from sklearn.linear_model import LinearRegression
-from sklearn.svm import SVR
-import sys
-from xml.dom import minidom
 from zwift import Client
 
 
@@ -360,29 +362,18 @@ class ZwiftTraining:
         df = df.set_index('dtime')
         df = df.groupby(pd.Grouper(freq=interval, closed='left', label='left')).agg({field: 'sum'})
 
-        fig, ax = plt.subplots(1, 1, figsize=(15,6))
-        
         title = field.replace('_', ' ').title()
         if field in ['duration', 'mov_duration']:
             df[field] = df[field].dt.total_seconds() / 3600
             title += ' (Hours)'
         
-        ax.set_title(title)
-        x = pd.to_datetime(df.index)
-        if len(x) > 10:
-            width = 0.8
-        elif len(x) > 5:
-            width = 3
-        else:
-            width = 5
+        ax = df.plot.bar(y=field, title=title, align='center', color='darkgreen', alpha=0.5,
+                         figsize=(15, 6), rot=45)
+        @mpl.ticker.FuncFormatter
+        def major_formatter_x(x, pos):
+            return f'{df.index[x].date()}'
+        ax.xaxis.set_major_formatter(major_formatter_x)
         
-        ax.bar(x, df[field], label=title, width=width, align='center', color='darkgreen', alpha=0.5)
-        
-        ax.set_xticks(x)
-        ax.set_xticklabels(x.strftime('%Y-%m-%d'))
-        if len(x) >= 10:
-            plt.setp( ax.xaxis.get_majorticklabels(), rotation=70 )
-            
         ax.set_ylabel(title)
         ax.grid()
         ax.legend()
@@ -947,6 +938,7 @@ class ZwiftTraining:
         
         result = pd.DataFrame({'pct_min': pct_min,
                                'pct_max': pct_max,
+                               'ftp': round(avg_ftp),
                                'power_min': power_min,
                                'power_max': power_max,
                                'duration': duration})
@@ -1031,6 +1023,56 @@ class ZwiftTraining:
         if show:
             plt.show()
     
+    def plot_power_zones_duration2(self, from_dtime=None, to_dtime=None, freq='W-MON', zones=POWER_ZONES,
+                                   labels=POWER_LABELS):
+        if not to_dtime:
+            to_dtime = pd.Timestamp.now()
+        if not from_dtime:
+            from_dtime = to_dtime - pd.Timedelta(weeks=20)
+        dates = list(pd.date_range(from_dtime, end=to_dtime, freq=freq, normalize=True, closed='left'))
+        dates.append(pd.Timestamp.now().normalize())
+        periods = zip(dates[0:-1], dates[1:])
+        
+        rows = []
+        for start_date, end_date in periods:
+            df = self.calc_power_zones_duration(from_dtime=start_date, to_dtime=end_date, ftp=None, 
+                                  zones=zones, labels=labels)
+            #ser = pd.Series(pd.to_timedelta(df['duration'], unit='S').transpose(), name=start_date)
+            ser = pd.Series(df['duration'].transpose(), name=start_date.date())
+            rows.append(ser)
+            
+        df = pd.DataFrame(rows)
+        
+        zns = [0] + zones
+        colors = [self.power_color_gradient(zns[i], output='mpl') for i in range(len(zns))]
+
+        if False:
+            fig, ax = plt.subplots(figsize=(15, 6))
+            margin_bottom = np.zeros(len(df))
+            #print(f'dates: {df.index}')
+            #print(f'margin_bottom: {margin_bottom}')
+            
+            for zonenum, col in enumerate(df.columns):
+                values = df[col]
+                #print(f'  {col}: {values}')
+                ax.bar(df.index, values, align='center', label=col, color=colors[zonenum],
+                       bottom=margin_bottom, alpha=0.6, width=5)
+                margin_bottom += values
+        else:
+            ax = df.plot.bar(stacked=True, color=colors, alpha=0.6, figsize=(15, 6), rot=45)
+                        
+        ax.yaxis.set_major_locator(mpl.ticker.MultipleLocator(3600))
+        
+        @mpl.ticker.FuncFormatter
+        def major_formatter_y(val, pos):
+            return f'{int(val//3600)}'
+        ax.yaxis.set_major_formatter(major_formatter_y)
+        ax.set_ylabel("Duration (Hours)")
+        
+        ax.grid()
+        ax.legend(loc=2)
+        plt.show()
+        
     def calc_hr_zones_duration(self, from_dtime, to_dtime, max_hr, 
                                zones=HR_ZONES, labels=HR_LABELS):
         from_dtime = pd.Timestamp(from_dtime)
