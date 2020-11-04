@@ -337,10 +337,41 @@ class ZwiftTraining:
         for i_r, col in enumerate(cols):
             ax = plt.subplot2grid((nrows, ncols), (i_r+2, 0), colspan=3)
             df.plot(x=x, y=col, ax=ax, color=f'C{i_r}', zorder=10)
-            ax.axhline(df[col].mean(), color=f'C{i_r}', linestyle='--', zorder=1)
+            ax.axhline(df[col].mean(), color=f'C{i_r}', linestyle='--', zorder=5)
             ax.set_ylabel(col)
             ax.set_title(f'{col} avg: {df[col].mean():.1f}, max: {df[col].max()}')
             ax.grid()
+            if col=='power':
+                ftph = FTPHistory(self.profile_history, default_ftp=ftp)
+                ftp = ftph.get_ftp(dtime)
+                if not ftp:
+                    continue
+                zones = [0] + ZwiftTraining.POWER_ZONES
+                colors = [self.power_color_gradient(zones[i], output='mpl') for i in range(len(zones))]
+                for iz in range(1, len(zones)):
+                    lo = ftp*zones[iz-1]
+                    hi = ftp*zones[iz]
+                    ax.fill_between(ax.get_xlim(), y1=hi, y2=lo, step='mid', zorder=1,
+                                    color=colors[iz-1], alpha=0.2)
+            elif col=='hr':
+                #zones = np.arange(0, 1.2, 0.1)
+                zones = [0] + ZwiftTraining.HR_ZONES
+                colors = [self.hr_color_gradient(zones[i], output='mpl') for i in range(len(zones))]
+                ylims = ax.get_ylim()
+                for iz in range(1, len(zones)):
+                    lo = max_hr*zones[iz-1]
+                    hi = max_hr*zones[iz]
+                    if hi <= ylims[0]:
+                        continue
+                    if lo >= ylims[1]:
+                        continue
+                    if lo < ylims[0]:
+                        lo = ylims[0]
+                    if hi > ylims[1]:
+                        hi = ylims[1]
+                    color = colors[iz-1]
+                    ax.fill_between(ax.get_xlim(), y1=hi, y2=lo, step='mid', zorder=1,
+                                    color=color, alpha=0.2)
 
         fig.tight_layout()
         plt.show()
@@ -978,6 +1009,39 @@ class ZwiftTraining:
             #return f'({c[0]:.0f}, {c[1]:.0f}, {c[2]:.0f}, {opacity:.1f})'
             return f'#{c[0]:02x}{c[1]:02x}{c[2]:02x}{int(opacity*0xff):02x}'
         
+    @staticmethod
+    def hr_color_gradient(pct_hr, opacity=1, output='css'):
+        HR0 = 0.6
+        HR1 = 0.8
+        
+        if pct_hr < HR0:
+            mix = pct_hr / HR0
+            c1=np.array(mpl.colors.to_rgb('#0000aa'))
+            c2=np.array(mpl.colors.to_rgb('#00aa00'))
+            #return mpl.colors.to_hex((1-mix)*c1 + mix*c2)
+            c = (1-mix)*c1 + mix*c2
+        elif pct_hr < HR1:
+            mix = (pct_hr - HR0) / (HR1 - HR0)
+            c1=np.array(mpl.colors.to_rgb('#00aa00'))
+            c2=np.array(mpl.colors.to_rgb('yellow'))
+            #return mpl.colors.to_hex((1-mix)*c1 + mix*c2)
+            c = (1-mix)*c1 + mix*c2
+        else:
+            pct_hr = min(pct_hr, 1)
+            mix = (pct_hr - HR1) / (1 - HR1)
+            c1=np.array(mpl.colors.to_rgb('yellow'))
+            c2=np.array(mpl.colors.to_rgb('red'))
+            #return mpl.colors.to_hex((1-mix)*c1 + mix*c2)
+            c = (1-mix)*c1 + mix*c2
+        
+        if output=='css':
+            c = np.round(c * 0xff, 0)
+            return f'rgba({c[0]:.0f}, {c[1]:.0f}, {c[2]:.0f}, {opacity:.1f})'
+        else:
+            c = np.round(c * 255, 0).astype(int)
+            #return f'c1={c1}\nc2={c2}\nmix={mix}\nc={c}'
+            #return f'({c[0]:.0f}, {c[1]:.0f}, {c[2]:.0f}, {opacity:.1f})'
+            return f'#{c[0]:02x}{c[1]:02x}{c[2]:02x}{int(opacity*0xff):02x}'
     
     def plot_power_zones_duration(self, from_dtime, to_dtime, ftp=None, zones=POWER_ZONES, labels=POWER_LABELS,
                                   title=None, ax=None, show=True, label_type='default'):
@@ -1148,7 +1212,7 @@ class ZwiftTraining:
         
         x = range(len(z))
         zns = [0] + zones
-        colors = [ZwiftTraining.power_color_gradient(zns[i], output='mpl') for i in range(len(zns))]
+        colors = [ZwiftTraining.hr_color_gradient(zns[i], output='mpl') for i in range(len(zns))]
         bars = ax.bar(x, z['duration'], color=colors, alpha=0.6)
         
         # text percentage
