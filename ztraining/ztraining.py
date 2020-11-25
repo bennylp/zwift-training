@@ -346,16 +346,25 @@ class ZwiftTraining:
                 ftp = ftph.get_ftp(dtime)
                 if not ftp:
                     continue
-                zones = [0] + ZwiftTraining.POWER_ZONES
+                zones = [0] + ZwiftTraining.POWER_ZONES + [20]
                 colors = [self.power_color_gradient(zones[i], output='mpl') for i in range(len(zones))]
+                ylims = ax.get_ylim()
                 for iz in range(1, len(zones)):
                     lo = ftp*zones[iz-1]
                     hi = ftp*zones[iz]
+                    if hi <= ylims[0]:
+                        continue
+                    if lo >= ylims[1]:
+                        continue
+                    if lo < ylims[0]:
+                        lo = ylims[0]
+                    if hi > ylims[1]:
+                        hi = ylims[1]
                     ax.fill_between(ax.get_xlim(), y1=hi, y2=lo, step='mid', zorder=1,
-                                    color=colors[iz-1], alpha=0.2)
+                                    color=colors[iz-1], alpha=0.4)
             elif col=='hr':
                 #zones = np.arange(0, 1.2, 0.1)
-                zones = [0] + ZwiftTraining.HR_ZONES
+                zones = [0] + ZwiftTraining.HR_ZONES + [1.1]
                 colors = [self.hr_color_gradient(zones[i], output='mpl') for i in range(len(zones))]
                 ylims = ax.get_ylim()
                 for iz in range(1, len(zones)):
@@ -371,7 +380,7 @@ class ZwiftTraining:
                         hi = ylims[1]
                     color = colors[iz-1]
                     ax.fill_between(ax.get_xlim(), y1=hi, y2=lo, step='mid', zorder=1,
-                                    color=color, alpha=0.2)
+                                    color=color, alpha=0.35)
 
         fig.tight_layout()
         plt.show()
@@ -746,7 +755,7 @@ class ZwiftTraining:
         if ax is None:
             _, ax = plt.subplots(nrows=1, ncols=1, figsize=(15,8))
         
-        power_intervals = None
+        power_intervals = []
         for i_period, (from_date, to_date) in enumerate(periods):
             from_date = pd.Timestamp(from_date)
             to_date = pd.Timestamp(to_date)
@@ -778,24 +787,27 @@ class ZwiftTraining:
                     df = df.drop(columns=[col])
                     
             power_cols = [col for col in df.columns]
-            power_intervals = [int(col) for col in power_cols]
-            power_interval_labels = [sec_to_str(i) for i in power_intervals]
+            current_power_intervals = [int(col) for col in power_cols]
+            if len(current_power_intervals) > len(power_intervals):
+                power_intervals = current_power_intervals
+                power_interval_labels = [sec_to_str(i) for i in power_intervals]
                 
             values = [df[col].max() for col in power_cols]
             label = f"{from_date.strftime('%d %b %Y')} - {to_date.strftime('%d %b %Y')}"
             ax.plot(range(len(power_cols)), values, label=label,
                     zorder=10+i_period)
         
-        if power_intervals is None:
+        if not power_intervals:
             sys.stderr.write('Error: no graph can be generated. Check the directory, or the dates\n')
             return
         
         tick_posses = dict([(1, '1s'), (5, '5s'), (10, '10s'), (30, '30s'),
-                            (60, '1m'), (5*60, '5m'), (20*60, '20m'), 
-                            (1*3600, '1h'), (2*3600, '2h'), (3*3600, '3h'), 
-                            (4*3600, '3h'), (4*3600, '4h'), (5*3600, '5h'), 
-                            (6*3600, '6h'), (7*3600, '2h'), (7*3600, '2h'), 
-                            (8*3600, '8h'), (11*3600, '11h')])
+                            (60, '1m'), (5*60, '5m'), 
+                            (10*60, '10m'), (15*60, '15m'), (20*60, '20m'), 
+                            (1*3600, '1h'), (1.5*3600, '1.5h'), (2*3600, '2h'), (3*3600, '3h'), 
+                            (4*3600, '4h'), (5*3600, '5h'), (6*3600, '6h'), (7*3600, '7h'), 
+                            (8*3600, '8h'), (9*3600, '9h'), (10*3600, '10h'), (11*3600, '11h'),
+                            (12*3600, '12h'), (13*3600, '13h'), (14*3600, '14h'), (15*3600, '15h')])
         
         xticks = []
         for i_p, interval in enumerate(power_intervals):
