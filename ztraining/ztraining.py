@@ -90,6 +90,7 @@ class ZwiftTraining:
                     'VO2Max', 'Anaerobic', 'Neuromoscular']
     HR_ZONES = [0.6, 0.72, 0.8, 0.9 ]
     HR_LABELS = ['Zone 1', 'Zone 2', 'Zone 3', 'Zone 4', 'Zone 5']
+    SST_RANGE = (0.88, 0.94)
     
     def __init__(self, conf_file, quiet=False):
         with open(conf_file) as f:
@@ -656,8 +657,14 @@ class ZwiftTraining:
                 print(f'Zwift local profile is up to date (last update: {latest["dtime"]})')
             return False
     
-    def get_cycling_level_xp(self, level):
+    @staticmethod
+    def get_cycling_level_xp(level):
         levels = pd.read_csv('data/levels.csv')
+        return levels.loc[ levels['level'] == level, 'xp' ].iloc[0]
+    
+    @staticmethod
+    def get_running_level_xp(level):
+        levels = pd.read_csv('data/running_levels.csv')
         return levels.loc[ levels['level'] == level, 'xp' ].iloc[0]
     
     @staticmethod
@@ -910,7 +917,7 @@ class ZwiftTraining:
             result[str(p)] = round(df['power'].rolling(p).mean().max(), 1)
         return result
     
-    def calc_power_zones_duration(self, from_dtime, to_dtime, ftp=None, 
+    def calc_power_zones_duration(self, from_dtime, to_dtime, ftp=None, with_sst=False,
                                   zones=POWER_ZONES, labels=POWER_LABELS):
         #if from_dtime:
         from_dtime = pd.Timestamp(from_dtime)
@@ -941,6 +948,7 @@ class ZwiftTraining:
         results = [empty]
         ftps = [] # for averaging
         zones = [0] + zones
+        sst_duration = 0
         for dtime, adf in activities.iterrows():
             ftp_at_that_time = ftph.get_ftp(dtime)
             if not ftp_at_that_time:
@@ -958,6 +966,12 @@ class ZwiftTraining:
                 mi = zones[i_z]
                 ma = zones[i_z+1] if i_z < len(zones)-1 else 1e10
                 data.loc[ ((data['%ftp'] > mi) & (data['%ftp'] <= ma)), 'power_zone' ] = i_z+1
+
+            if with_sst:
+                mi = ZwiftTraining.SST_RANGE[0]
+                ma = ZwiftTraining.SST_RANGE[1]
+                dur = len(data[(data['%ftp'] >= mi) & (data['%ftp'] <= ma)])
+                sst_duration += dur
 
             secs_in_zone = data.groupby('power_zone').agg({'dtime': 'count'})
             secs_in_zone = secs_in_zone.rename(columns={'dtime': dtime})
@@ -985,7 +999,10 @@ class ZwiftTraining:
                                'power_min': power_min,
                                'power_max': power_max,
                                'duration': duration})
-        return result
+        if with_sst:
+            return result, sst_duration
+        else:
+            return result
     
     @staticmethod
     def power_color_gradient(pct_ftp, opacity=1, output='css'):
@@ -1056,8 +1073,14 @@ class ZwiftTraining:
             return f'#{c[0]:02x}{c[1]:02x}{c[2]:02x}{int(opacity*0xff):02x}'
     
     def plot_power_zones_duration(self, from_dtime, to_dtime, ftp=None, zones=POWER_ZONES, labels=POWER_LABELS,
-                                  title=None, ax=None, show=True, label_type='default'):
-        z = self.calc_power_zones_duration(from_dtime, to_dtime, ftp=ftp, zones=zones, labels=labels)
+                                  with_sst=False, title=None, ax=None, show=True, label_type='default'):
+        r = self.calc_power_zones_duration(from_dtime, to_dtime, ftp=ftp, zones=zones, labels=labels,
+                                           with_sst=with_sst)
+        if with_sst:
+            z, sst_duration = r
+        else:
+            z, sst_duration = r, None
+            
         if z is None or not len(z):
             return
         
@@ -1072,7 +1095,13 @@ class ZwiftTraining:
         x = range(len(z))
         zns = [0] + zones
         colors = [ZwiftTraining.power_color_gradient(zns[i], output='mpl') for i in range(len(zns))]
-        bars = ax.bar(x, z['duration'], color=colors, alpha=0.6)
+        bars = ax.bar(x, z['duration'], color=colors, alpha=0.6, zorder=10)
+        
+        if with_sst and len(zones) >= 5:
+            width = bars.patches[0].get_width()
+            color = ZwiftTraining.power_color_gradient(0.88, output='mpl')
+            ax.bar(2.75, sst_duration/3600, color=color, alpha=0.2, zorder=20,
+                   width=width/2, linewidth=1, edgecolor='b')
         
         # text percentage
         for i_b, rect in enumerate(bars):
@@ -1084,7 +1113,7 @@ class ZwiftTraining:
         
         ax.set_xticks(x)
         if label_type=='default':
-            xlabels = [f"{idx}\n{r['pct_min']:.0%} - {r['pct_max']:.0%}\n{r['power_min']:.0f} - {r['power_max']:.0f} watt" for idx,r in z.iterrows()]
+            xlabels = [f"{idx}\n{r['pct_min']:.0%} - {r['pct_max']:.0%}\n{r['power_min']:.0f} - {r['power_max']:.0f}w" for idx,r in z.iterrows()]
         elif label_type=='simple':
             xlabels = z.index
         else:
@@ -1438,6 +1467,8 @@ class ZwiftTraining:
                 
         if sport == 'cycling':
             route = route[ ~route['restriction'].str.contains('Run') ]
+        elif sport == 'running':
+            route = route[ route['restriction'].str.contains('Run') ]
         elif sport:
             assert False, f"Unknown sport: {sport}"
 
