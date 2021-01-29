@@ -8,17 +8,17 @@ import re
 import sys
 from xml.dom import minidom
 
+from fitparse import FitFile, FitParseError
+from geopy import distance
 import pytz
 from sklearn.linear_model import LinearRegression
 from sklearn.svm import SVR
+from zwift import Client
 
-from fitparse import FitFile, FitParseError
-from geopy import distance
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from zwift import Client
 
 
 def sec_to_str(sec, full=False):
@@ -79,7 +79,8 @@ class FTPHistory:
             ftp = ftp.iloc[:-1]
         
         assert len(ftp) <= 2
-        return ftp.iloc[0]
+        val = ftp.iloc[0]
+        return self.default_ftp if not val else val
         
         
 class ZwiftTraining:
@@ -215,7 +216,10 @@ class ZwiftTraining:
 
         df = self.get_activities()
         if dtime:
-            df = df[ df['dtime']==dtime ]
+            dtime = pd.Timestamp(dtime)
+            df = df[ df['dtime'].dt.date==dtime.date() ]
+            if len(df) > 1:
+                df = df[ df['dtime']==dtime ]
         if src_file:
             df = df[ df['src_file']==src_file ]
         
@@ -763,6 +767,7 @@ class ZwiftTraining:
             _, ax = plt.subplots(nrows=1, ncols=1, figsize=(15,8))
         
         power_intervals = []
+        min_y = 1e6
         for i_period, (from_date, to_date) in enumerate(periods):
             from_date = pd.Timestamp(from_date)
             to_date = pd.Timestamp(to_date)
@@ -800,6 +805,7 @@ class ZwiftTraining:
                 power_interval_labels = [sec_to_str(i) for i in power_intervals]
                 
             values = [df[col].max() for col in power_cols]
+            min_y = min(min(values), min_y)
             label = f"{from_date.strftime('%d %b %Y')} - {to_date.strftime('%d %b %Y')}"
             ax.plot(range(len(power_cols)), values, label=label,
                     zorder=10+i_period)
@@ -828,9 +834,10 @@ class ZwiftTraining:
         ax.set_xlabel('Interval')
         
         max_y = ax.get_ylim()[1]
+        min_y = (min_y // 50) * 50
         y_grid = 50
-        ax.set_yticks(np.arange(0, (max_y+y_grid-1)//y_grid*y_grid, y_grid))
-        ax.set_yticks(np.arange(0, max_y, 25), minor=True)
+        ax.set_yticks(np.arange(min_y, (max_y+y_grid-1)//y_grid*y_grid, y_grid))
+        ax.set_yticks(np.arange(min_y, max_y, 25), minor=True)
         
         ax.grid()
         #ax.grid(True, which='both', axis='y')
@@ -952,8 +959,11 @@ class ZwiftTraining:
         for dtime, adf in activities.iterrows():
             ftp_at_that_time = ftph.get_ftp(dtime)
             if not ftp_at_that_time:
-                print(f'No FTP at {dtime}')
-                continue
+                if ftp is None:
+                    print(f'No FTP at {dtime}')
+                    continue
+                else:
+                    ftp_at_that_time = ftp
             ftps.append(ftp_at_that_time)
             data = self.get_activity_data(dtime=dtime, src_file=adf['src_file'])
             if len(data)==0:
@@ -1128,8 +1138,8 @@ class ZwiftTraining:
         if show:
             plt.show()
     
-    def plot_power_zones_duration2(self, from_dtime=None, to_dtime=None, freq='W-MON', zones=POWER_ZONES,
-                                   labels=POWER_LABELS):
+    def plot_power_zones_duration2(self, from_dtime=None, to_dtime=None, freq='W-MON', 
+                                   zones=POWER_ZONES, labels=POWER_LABELS, ftp=None):
         if not to_dtime:
             to_dtime = pd.Timestamp.now()
         if not from_dtime:
@@ -1140,9 +1150,12 @@ class ZwiftTraining:
         
         rows = []
         for start_date, end_date in periods:
-            df = self.calc_power_zones_duration(from_dtime=start_date, to_dtime=end_date, ftp=None, 
+            df = self.calc_power_zones_duration(from_dtime=start_date, to_dtime=end_date, ftp=ftp, 
                                   zones=zones, labels=labels)
             #ser = pd.Series(pd.to_timedelta(df['duration'], unit='S').transpose(), name=start_date)
+            if df is None:
+                #print('df is None')
+                continue
             ser = pd.Series(df['duration'].transpose(), name=start_date.date())
             rows.append(ser)
             
@@ -1639,18 +1652,23 @@ class ZwiftTraining:
         if not len(found):
             raise ValueError(f'{kind} "{value}" not found')
 
-        inventory = pd.read_csv(os.path.join(self.profile_dir, 'inventories.csv'),
-                                parse_dates=['dtime'])
-
-        found = inventory[ inventory['name']==value ]
-        if len(found):
-            raise ValueError(f'{kind} "{value}" already exist')
+        data = {'type': kind, 
+                'name': value, 
+                'dtime': pd.Timestamp.now().replace(microsecond=0)}
         
-        inventory = inventory.append({'type': kind, 
-                                      'name': value, 
-                                      'dtime': pd.Timestamp.now().replace(microsecond=0)}, 
-                                     ignore_index=True)
-        inventory.to_csv(os.path.join(self.profile_dir, 'inventories.csv'), index=False)
+        path = os.path.join(self.profile_dir, 'inventories.csv')
+        if os.path.exists(path):
+            inventory = pd.read_csv(path, parse_dates=['dtime'])
+    
+            found = inventory[ inventory['name']==value ]
+            if len(found):
+                raise ValueError(f'{kind} "{value}" already exist')
+            inventory = inventory.append(data, ignore_index=True)
+        else:
+            data = {key:[val] for key, val in data.items()}
+            inventory = pd.DataFrame(data)
+            
+        inventory.to_csv(path, index=False)
         print(f'{kind} {value} successfully added to inventory')
         return inventory
 
