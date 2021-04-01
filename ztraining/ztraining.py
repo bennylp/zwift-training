@@ -231,8 +231,10 @@ class ZwiftTraining:
         activities_dir = os.path.join(self.profile_dir, 'activities')
         csv_filename = dtime.strftime('%Y-%m-%d_%H-%M-%S.csv')
         csv_filename = os.path.join(activities_dir, csv_filename)
-
-        return pd.read_csv(csv_filename, parse_dates=['dtime'])
+        if os.path.exists(csv_filename):
+            return pd.read_csv(csv_filename, parse_dates=['dtime'])
+        else:
+            return None
             
     def activity_exists(self, dtime=None, src_file=None, tolerance=90):
         if os.path.exists(self.activity_file):
@@ -808,7 +810,7 @@ class ZwiftTraining:
             min_y = min(min(values), min_y)
             label = f"{from_date.strftime('%d %b %Y')} - {to_date.strftime('%d %b %Y')}"
             ax.plot(range(len(power_cols)), values, label=label,
-                    zorder=10+i_period)
+                    zorder=20-i_period)
         
         if not power_intervals:
             sys.stderr.write('Error: no graph can be generated. Check the directory, or the dates\n')
@@ -834,10 +836,15 @@ class ZwiftTraining:
         ax.set_xlabel('Interval')
         
         max_y = ax.get_ylim()[1]
-        min_y = (min_y // 50) * 50
-        y_grid = 50
+        if True or max_y - min_y <= 350:
+            y_grid = 25
+            y_minor_grid = 5
+        else:
+            y_grid = 50
+            y_minor_grid = 25
+        min_y = (min_y // y_grid) * y_grid
         ax.set_yticks(np.arange(min_y, (max_y+y_grid-1)//y_grid*y_grid, y_grid))
-        ax.set_yticks(np.arange(min_y, max_y, 25), minor=True)
+        ax.set_yticks(np.arange(min_y, max_y, y_minor_grid), minor=True)
         
         ax.grid()
         #ax.grid(True, which='both', axis='y')
