@@ -100,9 +100,11 @@ class ZwiftTraining:
             
             if self.conf.get('zwift-user', None) and self.conf.get('zwift-password', None):
                 self.zwift_client = Client(self.conf['zwift-user'], self.conf['zwift-password'])
+                self.zwift_id = self.conf.get('zwift-id', 'me')
                 del self.conf['zwift-password']
             else:
                 self.zwift_client = None
+                self.zwift_id = None
             self._zwift_profile = None
             
         if not quiet:
@@ -134,9 +136,11 @@ class ZwiftTraining:
     @property
     def zwift_profile(self):
         if self._zwift_profile is None:
-            self._zwift_profile = self.zwift_client.get_profile().profile
+            self._zwift_profile = self.zwift_client.get_profile(self.zwift_id).profile
             # Not sure what to do if metric is not used
             assert self._zwift_profile['useMetric'], "Not sure what to change if metric is not used"
+            with open(os.path.join(self.profile_dir, 'last-profile.json'), 'wt') as fp:
+                json.dump(self._zwift_profile, fp, indent='  ')
         return self._zwift_profile
     
     def plot_profile_history(self, field, interval='W-SUN', from_dtime=None, to_dtime=None):
@@ -508,13 +512,15 @@ class ZwiftTraining:
             
         return len(updates)
 
-    def import_activity_file(self, path, sport=None, overwrite=False, quiet=False):
+    def import_activity_file(self, path, sport=None, title=None,
+                             overwrite=False, quiet=False):
         """
         Import activity data and metadata from a TCX/GPX/FILE file.
         
         Parameters:
         - path:       Path to file to import
         - sport:      Give a hint about the sport of this activity.
+        - title:      Overwrite the title
         - overwrite:  False (the default) means do not save the activity if previous
                       activity with the same filename has been imported.
         - quiet:      Do not print messages if True
@@ -522,6 +528,8 @@ class ZwiftTraining:
         df, meta = ZwiftTraining.parse_file(path)
         if not meta['sport']:
             meta['sport'] = sport
+        if title:
+            meta['title'] = title
         self.save_activity(df, meta, overwrite=overwrite, quiet=quiet)
         
     def save_activity(self, df, meta, overwrite=False, quiet=False):
@@ -593,8 +601,9 @@ class ZwiftTraining:
             
         return n_updates
 
-    def zwift_list_activities(self, start=0, max=10, batch=10):
-        player_id = self.zwift_profile['id']
+    def zwift_list_activities(self, start=0, max=10, batch=10, player_id=None):
+        if player_id is None:
+            player_id = self.zwift_profile['id']
         activity_client = self.zwift_client.get_activity(player_id)
         count = 0
         
@@ -610,10 +619,11 @@ class ZwiftTraining:
             start += batch
         
         return pd.DataFrame(metas)
-        
+
     def _zwift_update_profile(self, quiet=False):
-        if os.path.exists(self.zwift_profile_updates_csv):
-            df = pd.read_csv(self.zwift_profile_updates_csv, parse_dates=['dtime'])
+        profile_csv_file = self.zwift_profile_updates_csv
+        if os.path.exists(profile_csv_file):
+            df = pd.read_csv(profile_csv_file, parse_dates=['dtime'])
             latest = df.sort_values('dtime').iloc[-1]
         else:
             df = None
@@ -652,17 +662,17 @@ class ZwiftTraining:
                 df = df.append(row, ignore_index=True)
                 
             df = df.sort_values('dtime')
-            df.to_csv(self.zwift_profile_updates_csv, index=False)
+            df.to_csv(profile_csv_file, index=False)
             
             if not quiet:
-                print('Zwift local profile updated')
+                print(f'{profile_csv_file} updated')
                 
             return True
         else:
             if not quiet:
-                print(f'Zwift local profile is up to date (last update: {latest["dtime"]})')
+                print(f'{profile_csv_file} is up to date (last update: {latest["dtime"]})')
             return False
-    
+
     @staticmethod
     def get_cycling_level_xp(level):
         levels = pd.read_csv('data/levels.csv')
@@ -752,8 +762,9 @@ class ZwiftTraining:
             
         return n_updates
 
-    def parse_zwift_activity(self, activity_id, meta=None, quiet=False):
-        player_id = self.zwift_profile['id']
+    def parse_zwift_activity(self, activity_id, meta=None, quiet=False, player_id=None):
+        if player_id is None:
+            player_id = self.zwift_profile['id']
         activity_client = self.zwift_client.get_activity(player_id)
         if not meta:
             activity = activity_client.get_activity(activity_id)
@@ -1830,18 +1841,18 @@ class ZwiftTraining:
         return distance.distance((lat1, lon1), (lat2, lon2)).m
     
     @staticmethod
-    def parse_file(file):
+    def parse_file(file, sport=None):
         if file[-4:].lower() == '.tcx':
-            return ZwiftTraining.parse_tcx_file(file)
+            return ZwiftTraining.parse_tcx_file(file, sport=sport)
         elif file[-4:].lower() == '.fit':
-            return ZwiftTraining.parse_fit_file(file)
+            return ZwiftTraining.parse_fit_file(file, sport=sport)
         elif file[-4:].lower() == '.gpx':
-            return ZwiftTraining.parse_gpx_file( file)
+            return ZwiftTraining.parse_gpx_file( file, sport=sport)
         else:
             assert False, f"Unsupported file extension {file[-3:]}"
         
     @staticmethod    
-    def parse_tcx_file(path):
+    def parse_tcx_file(path, sport=None):
         """
         Convert TCX file to CSV
         """
@@ -1849,10 +1860,11 @@ class ZwiftTraining:
             doc = f.read().strip()
         doc = minidom.parseString(doc)
         
-        sport = doc.getElementsByTagName('Activities')[0] \
-                   .getElementsByTagName('Activity')[0] \
-                   .attributes['Sport'].value \
-                   .lower()
+        if not sport:
+            sport = doc.getElementsByTagName('Activities')[0] \
+                       .getElementsByTagName('Activity')[0] \
+                       .attributes['Sport'].value \
+                       .lower()
         title = xml_path_val(doc, 'Activities|Activity|Notes', '')
         
         calories = 0
@@ -1899,7 +1911,7 @@ class ZwiftTraining:
         return ZwiftTraining._process_activity(df, meta, copy=False)
     
     @staticmethod
-    def parse_gpx_file(path):
+    def parse_gpx_file(path, sport=None):
         """
         Convert GPX file to CSV
         """
@@ -1908,12 +1920,13 @@ class ZwiftTraining:
         doc = minidom.parseString(doc)
         
         title = xml_path_val(doc, 'trk|name', '')
-        if 'ride' in title.lower():
-            sport = 'biking'
-        elif 'run' in title.lower():
-            sport = 'running'
-        else:
-            sport = xml_path_val(doc, 'trk|type').lower()
+        if not sport:
+            if 'ride' in title.lower():
+                sport = 'biking'
+            elif 'run' in title.lower():
+                sport = 'running'
+            else:
+                sport = xml_path_val(doc, 'trk|type').lower()
         
         trackpoints = doc.getElementsByTagName('trkpt')
         rows = []
@@ -1944,14 +1957,15 @@ class ZwiftTraining:
         return ZwiftTraining._process_activity(df, meta, copy=False)
     
     @staticmethod
-    def parse_fit_file(path):
+    def parse_fit_file(path, sport=None):
         """
         Convert FIT file to CSV
         """
         fitfile = FitFile(path)
         messages = fitfile.get_messages('record')
         records = [m.get_values() for m in messages]
-        meta = OrderedDict(dtime=None, sport='', title='', src_file=os.path.split(path)[-1],
+        sport = sport or ''
+        meta = OrderedDict(dtime=None, sport=sport, title='', src_file=os.path.split(path)[-1],
                            route='', bike='', wheel='', note='', )
         return ZwiftTraining.parse_fit_records(records, meta)
 
@@ -2264,4 +2278,94 @@ class ZwiftTraining:
         #display( df.style.background_gradient(cmap='viridis', subset=['on watt', 'off watt']) )
     
         return
-            
+        
+    def plot_climbing(self, path=None, activity_dtime=None, seg_len=10, 
+                      start_km=0, end_km=1000, min_kph=2, sport='biking'):
+        """
+        Plot climbing profile of a particular activity/route
+        """
+        if path:
+            df, meta = self.parse_file(path, sport=sport)
+        elif activity:
+            df = self.get_activity_data(activity_dtime)
+        else:
+            assert not 'File or activity_dtime must be specified'
+                
+        df['distance_m'] = df['distance'] * 1000
+        df['distance_grp'] = (df['distance_m'] / seg_len).apply(np.floor).astype(int)
+        df = df[['dtime', 'mov_duration', 'elevation', 'distance', 'distance_m', 
+                 'distance_grp']]
+    
+        df2 = df.groupby('distance_grp').first()
+        df2['dtime_diff'] = df2['dtime'].diff()
+        df2['grade'] = df2['elevation'].diff() * 100 / df2['distance_m'].diff()
+        df2 = df2[ (df2['distance'] >= start_km) & (df2['distance'] <= end_km) ]
+        
+        if False:
+            min_speed = min_kph * 1000 / 3600
+            min_seg_duration = seg_len / min_speed
+            df2 = df2[ df2['dtime_diff'] < pd.Timedelta(seconds=min_seg_duration)]
+        
+        df2 = df2.dropna()
+        df2 = df2.set_index('distance')
+    
+        lengths = [50, 100, 200, 500, 1000]
+        nrows = 3 + len(lengths)
+        
+        fig = plt.figure(figsize=(16,4*nrows))
+        ax = plt.subplot2grid((nrows, 4), (0, 0), rowspan=2, colspan=4)
+        ax.plot(df2['grade'], marker='o', alpha=0.5)
+        ax.grid()
+        ax.set_ylabel('Gradient %')
+        ax2 = ax.twinx()
+        ax2.plot(df2['elevation'], color='C1')
+        ax2.set_ylabel('Elevation')
+        
+        ax = plt.subplot2grid((nrows, 4), (2, 0), rowspan=1, colspan=4)
+        ax.hist(df2['grade'], bins=50, alpha=0.5)
+        ax.set_title('Gradient Histogram')
+        ax.set_xlabel('Gradient %')
+        ax.grid()
+        
+        for i_seg_len, cur_seg_len in enumerate(lengths):
+            segments = [df2['grade']]
+            for i_c in range(4):
+                max_avg = -1
+                segment = None
+                i_segment = None
+                end_idx = None
+                for i, cur_segment in enumerate(segments):
+                    ma = cur_segment.rolling(cur_seg_len // seg_len).mean()
+                    ma = ma.dropna()
+                    if len(ma) == 0:
+                        continue
+                    e = ma.idxmax()
+                    if ma.loc[e] > max_avg:
+                        arr = cur_segment
+                        end_idx = e
+                        max_avg = ma.loc[e]
+                        i_segment = i
+                
+                if end_idx is None:
+                    continue
+                end_loc = arr.index.get_loc(end_idx)
+                start_loc = max(0, end_loc - cur_seg_len//seg_len)
+                start_idx = arr.index[start_loc]
+                
+                sub_arr = arr.iloc[start_loc:end_loc+1]
+                ax = plt.subplot2grid((nrows, 4), (i_seg_len+3, i_c), rowspan=1, colspan=1)
+                ax.plot(sub_arr, marker='o', alpha=0.5)
+                ax.grid()
+                ax.set_ylabel('Gradient %')
+                ax.set_xlabel('Distance')
+                ax.set_title(f'avg {cur_seg_len}m: {max_avg:.0f}%')
+                
+                del segments[i_segment]
+                if start_loc >= cur_seg_len // seg_len:
+                    segments.append(arr.iloc[:start_loc])
+                if end_loc+1 < len(arr):
+                    segments.append(arr.iloc[end_loc+1:])
+    
+        fig.tight_layout()
+        plt.show()
+                
