@@ -93,14 +93,17 @@ class ZwiftTraining:
     HR_LABELS = ['Zone 1', 'Zone 2', 'Zone 3', 'Zone 4', 'Zone 5']
     SST_RANGE = (0.88, 0.94)
     
-    def __init__(self, conf_file, quiet=False):
+    def __init__(self, conf_file, zwift_client=None, quiet=False):
         with open(conf_file) as f:
             self.conf = json.load(f)
+            self.zwift_id = self.conf.get('zwift-id', 'me')
             self.profile_dir = self.conf.get('dir', self.DEFAULT_PROFILE_DIR)
             
-            if self.conf.get('zwift-user', None) and self.conf.get('zwift-password', None):
+            if zwift_client is not None:
+                self.zwift_client = zwift_client
+                del self.conf['zwift-password']
+            elif self.conf.get('zwift-user', None) and self.conf.get('zwift-password', None):
                 self.zwift_client = Client(self.conf['zwift-user'], self.conf['zwift-password'])
-                self.zwift_id = self.conf.get('zwift-id', 'me')
                 del self.conf['zwift-password']
             else:
                 self.zwift_client = None
@@ -143,7 +146,8 @@ class ZwiftTraining:
                 json.dump(self._zwift_profile, fp, indent='  ')
         return self._zwift_profile
     
-    def plot_profile_history(self, field, interval='W-SUN', from_dtime=None, to_dtime=None):
+    def plot_profile_history(self, field, interval='W-SUN', from_dtime=None, to_dtime=None,
+                             accum=True):
         df = self.profile_history
         if df is None or not len(df):
             print('Error: no profile history or profile history is empty')
@@ -184,9 +188,10 @@ class ZwiftTraining:
         ax.set_ylabel(f'{title}')
         handles = [plt.Rectangle((0,0),1,1, color='darkgreen', alpha=0.5)]
         
-        ax2 = ax.twinx()
-        handles.extend( ax2.plot(df.index, df[field], color='C1', alpha=1, zorder=10) )
-        ax2.set_ylabel(f'Accumulation')
+        if accum:
+            ax2 = ax.twinx()
+            handles.extend( ax2.plot(df.index, df[field], color='C1', alpha=1, zorder=10) )
+            ax2.set_ylabel(f'Accumulation')
         
         ax.set_xticks(df.index)
         ax.set_xticklabels(df.index.strftime('%y-%m-%d'))
@@ -624,6 +629,12 @@ class ZwiftTraining:
         profile_csv_file = self.zwift_profile_updates_csv
         if os.path.exists(profile_csv_file):
             df = pd.read_csv(profile_csv_file, parse_dates=['dtime'])
+            if 'cycling_time' not in df.columns:
+                df.insert(list(df.columns).index('cycling_calories'), 'cycling_time', np.NaN)
+            if 'height' not in df.columns:
+                df.insert(list(df.columns).index('weight')+1, 'height', np.NaN)
+            if 'age' not in df.columns:
+                df.insert(list(df.columns).index('height')+1, 'age', np.NaN)
             latest = df.sort_values('dtime').iloc[-1]
         else:
             df = None
@@ -636,8 +647,11 @@ class ZwiftTraining:
         cycling_elevation = pdata['totalDistanceClimbed']
         cycling_xp = pdata['totalExperiencePoints']
         cycling_drops = pdata['totalGold']
+        cycling_time = round(pdata['totalTimeInMinutes'] / 60, 3)
         ftp = pdata['ftp']
         weight = pdata['weight'] / 1000
+        height = pdata['height'] / 10
+        age = pdata['age']
         
         running_level = pdata['runAchievementLevel'] / 100
         running_distance = pdata['totalRunDistance'] / 1000
@@ -645,14 +659,22 @@ class ZwiftTraining:
         running_xp = pdata['totalRunExperiencePoints']
         running_calories = pdata['totalRunCalories']
         
-        if (latest is None or cycling_xp > latest['cycling_xp'] or cycling_drops != latest['cycling_drops'] or
-            ftp != latest['ftp'] or weight != latest['weight'] or cycling_level > latest['cycling_level'] or
-            running_level != latest['running_level'] or running_distance != latest['running_distance'] or
+        if (latest is None or cycling_xp > latest['cycling_xp'] or
+            cycling_drops != latest['cycling_drops'] or
+            cycling_time != latest['cycling_time'] or
+            ftp != latest['ftp'] or weight != latest['weight'] or
+            height != latest['height'] or age != latest['age'] or
+            cycling_level > latest['cycling_level'] or
+            running_level != latest['running_level'] or
+            running_distance != latest['running_distance'] or
             running_xp != latest['running_xp']):
             row = OrderedDict(dtime=pd.Timestamp.now().replace(microsecond=0), 
                               cycling_level=cycling_level, cycling_distance=cycling_distance,
-                              cycling_elevation=cycling_elevation, cycling_calories=np.NaN,
-                              cycling_xp=cycling_xp, cycling_drops=cycling_drops, ftp=ftp, weight=weight,
+                              cycling_elevation=cycling_elevation,
+                              cycling_time=cycling_time, 
+                              cycling_calories=np.NaN,
+                              cycling_xp=cycling_xp, cycling_drops=cycling_drops, ftp=ftp, 
+                              weight=weight, height=height, age=age,
                               running_level=running_level, running_distance=running_distance,
                               running_minutes=running_minutes, running_xp=running_xp,
                               running_calories=running_calories)
@@ -2280,7 +2302,8 @@ class ZwiftTraining:
         return
         
     def plot_climbing(self, path=None, activity_dtime=None, seg_len=10, 
-                      start_km=0, end_km=1000, min_kph=2, sport='biking'):
+                      start_km=0, end_km=1000, min_kph=2, sport='biking',
+                      max_grade=0.31):
         """
         Plot climbing profile of a particular activity/route
         """
@@ -2299,6 +2322,7 @@ class ZwiftTraining:
         df2 = df.groupby('distance_grp').first()
         df2['dtime_diff'] = df2['dtime'].diff()
         df2['grade'] = df2['elevation'].diff() * 100 / df2['distance_m'].diff()
+        df2.loc[df2['grade'] > max_grade*100, 'grade'] = max_grade*100
         df2 = df2[ (df2['distance'] >= start_km) & (df2['distance'] <= end_km) ]
         
         if False:
