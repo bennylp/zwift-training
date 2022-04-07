@@ -89,8 +89,11 @@ class ZwiftTraining:
     POWER_ZONES = [0.55, 0.75, 0.9, 1.05, 1.2, 1.5]
     POWER_LABELS = ['Active Recovery', 'Endurance', 'Tempo', 'Lactate Threshold', 
                     'VO2Max', 'Anaerobic', 'Neuromoscular']
-    HR_ZONES = [0.6, 0.72, 0.8, 0.9 ]
-    HR_LABELS = ['Zone 1', 'Zone 2', 'Zone 3', 'Zone 4', 'Zone 5']
+    #HR_ZONES = [0.6, 0.72, 0.8, 0.9 ]
+    #HR_LABELS = ['Zone 1', 'Zone 2', 'Zone 3', 'Zone 4', 'Zone 5']
+    # Based on Strava:
+    HR_ZONES = [0.6, 0.78, 0.88, 0.97 ]
+    HR_LABELS = ['1. Endurance', '2. Moderate', '3. Tempo', '4. Threshold', '5. Anaerobic']
     SST_RANGE = (0.88, 0.94)
     
     def __init__(self, conf_file, zwift_client=None, quiet=False):
@@ -536,6 +539,7 @@ class ZwiftTraining:
         if title:
             meta['title'] = title
         self.save_activity(df, meta, overwrite=overwrite, quiet=quiet)
+        return df, meta
         
     def save_activity(self, df, meta, overwrite=False, quiet=False):
         activities_dir = os.path.join(self.profile_dir, 'activities')
@@ -896,8 +900,7 @@ class ZwiftTraining:
         src_pattern = os.path.join(self.profile_dir, 'activities', '20*.csv')
         files = glob.glob(src_pattern)
         
-        curve_df = None
-        MIN_POWER = 20
+        curve_dfs = []
         MAX_POWER = 3000
         
         if to_date and to_date.hour==0 and to_date.minute==0:
@@ -912,7 +915,7 @@ class ZwiftTraining:
                 continue
             df = pd.read_csv(file, parse_dates=['dtime'])
             df = df[['dtime', 'power', 'hr']].dropna()
-            df = df[ (df['power'] >= MIN_POWER) & (df['power'] <= MAX_POWER)]
+            df = df[ (df['power'] <= MAX_POWER) ]
             if max_hr is not None:
                 df = df[ df['hr'] <= max_hr ]
             if len(df) == 0:
@@ -921,14 +924,11 @@ class ZwiftTraining:
             power = ZwiftTraining.calc_max_powers(df)
             if not len(power):
                 continue
+            curve_df = pd.DataFrame([power]).set_index('dtime')
+            curve_dfs.append(curve_df)
     
-            if curve_df is None:
-                curve_df = pd.DataFrame([power]).set_index('dtime')
-            else:
-                del power['dtime']
-                curve_df.loc[dtime] = power
-    
-            curve_df = curve_df.sort_values('dtime')                
+        curve_df = pd.concat(curve_dfs)
+        curve_df = curve_df.sort_values('dtime')                
         
         return curve_df
 
@@ -947,21 +947,23 @@ class ZwiftTraining:
         periods += list(range(300, 1200, 60))
         periods += list(range(1200, 7200, 300))
         periods += list(range(7200, 12*3600+600, 600))
-        
-        df = df[['dtime', 'power']].dropna()
-        df['power'] = df['power'].astype('float')
+
+        df['power'] = df['power'].astype('float').fillna(0)
         if not len(df):
             return {}
         
-        MIN_POWER = 20
         MAX_POWER = 3000
-        df = df[ (df['power'] >= MIN_POWER) & (df['power'] <= MAX_POWER)]
+        df = df[ df['power'] <= MAX_POWER ]
         if not len(df):
             return {}
         
         result = {'dtime': dtime}
         for p in periods:
-            result[str(p)] = round(df['power'].rolling(p).mean().max(), 1)
+            pwr = round(df['power'].rolling(p).mean().max(), 1)
+            if pd.isnull(pwr):
+                continue
+            result[str(p)] = pwr
+
         return result
     
     def calc_power_zones_duration(self, from_dtime, to_dtime, ftp=None, with_sst=False,
@@ -1784,6 +1786,7 @@ class ZwiftTraining:
             'cycling_transportation': 'cycling',
             'cycling_sport': 'cycling',
             '17': 'cycling', # strava GPX export
+            '1': 'cycling', # strava GPX export
             'ride': 'cycling',
             'virtualride': 'cycling',
             'virtualrun': 'running',

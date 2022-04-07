@@ -1,6 +1,7 @@
 name,type,flat time,climb time,price,level
 BMC SLR01,standard,3097,2949,376200,19
 BMC Time Machine,TT,2999,3014,781000,24
+Bridgestone RS9s,standard,3093,2938,511200,15
 Cann. CAAD12,standard,3095,2973,184500,2
 Cann. EVO,standard,3093,2938,213000,9
 Cann. SuperSix EVO,standard,3090,2942,816500,36
@@ -34,6 +35,7 @@ Parlee RZ7,standard,3087,2962,511200,28
 Pina. Dogma 65.1,standard,3092,2973,603500,29
 Pina. Dogma F10,standard,3086,2953,710000,39
 Pina. Dogma F12,standard,3083,2950,958500,29
+Pina. Dogma F,standard,3080,2939,1029500,32
 Pina. F8,standard,3092,2956,0,0
 Pinarello Bolide,TT,2999,3021,923000,25
 Pinarello Bolide TT,TT,2999,3024,1065000,42
@@ -42,6 +44,7 @@ Ridley Helium,standard,3095,2961,461500,3
 Ridley Noah Fast,standard,3085,2966,426000,9
 Scott Foil,standard,3088,2954,781000,17
 Scott Plasma,TT,2998,3004,852000,17
+Spec. Aethos S-Works,standard,3093,2929,923000,32
 Spec. Allez,standard,3095,2975,127800,4
 Spec. Allez Sprint,standard,3084,2955,127800,14
 Spec. Amira,standard,3094,2947,142000,31
@@ -51,7 +54,7 @@ Spec. Roubaix S-Works,standard,3094,2948,745500,5
 Spec. Ruby,standard,3094,2958,461500,5
 Spec. Ruby S-Works,standard,3094,2948,745500,5
 Spec. Tarmac,standard,3093,2943,0,0
-Spec. Tarmac Pro,standard,3093,2933,408300,11
+Spec. Tarmac Pro,standard,3093,2937,408300,11
 Spec. Tarmac SL7,standard,3090,2941,674500,5
 Spec. Venge,standard,3081,2965,461500,18
 Spec. Venge S-Works,standard,3078,2948,798800,33
