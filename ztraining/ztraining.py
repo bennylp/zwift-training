@@ -37,17 +37,23 @@ def xml_get_text(element):
     return ''.join(rc)
 
     
-def xml_path_val(element, tag_names, default=None):
+def xml_path_val(element, tag_names, default=None, immediate=False):
     tag_names = tag_names.split('|')
     for tag_name in tag_names:
-        nodes = element.getElementsByTagName(tag_name)
+        if immediate:
+            nodes = []
+            for node in element.childNodes:
+                if node.nodeName==tag_name:
+                    nodes.append(node)
+        else:
+            nodes = element.getElementsByTagName(tag_name)
         if len(nodes) == 0:
             if default is not None:
                 return default
             else:
                 raise KeyError(f'{tag_name} not found')
         if len(nodes) > 1:
-            raise RecursionError(f'Multiple {tag_name}s found')
+            raise RecursionError(f'Multiple "{tag_name}"s found')
         element = nodes[0]
     
     return xml_get_text(element)
@@ -1798,16 +1804,22 @@ class ZwiftTraining:
         
         if len(df):
             meta['distance'] = np.round(df["distance"].iloc[-1], 3)
-            meta['duration'] = pd.Timedelta(seconds=df.iloc[-1]['duration'])
-            meta['mov_duration'] = pd.Timedelta(seconds=df.iloc[-1]['mov_duration'])
+            if not pd.isnull(df.iloc[-1]['duration']):
+                meta['duration'] = pd.Timedelta(seconds=df.iloc[-1]['duration'])
+                meta['mov_duration'] = pd.Timedelta(seconds=df.iloc[-1]['mov_duration'])
+                meta['speed_avg'] = np.round(meta['distance'] / (meta['mov_duration'].total_seconds() / 3600), 1)
+                meta['speed_max'] = np.round(df["speed"].max(), 1)
+            else:
+                meta['duration'] = np.NaN
+                meta['mov_duration'] = np.NaN
+                meta['speed_avg'] = np.NaN
+                meta['speed_max'] = np.NaN
             if False:
                 climb = df['elevation'].diff()
                 meta['elevation'] = np.round(climb[ climb > 0.05 ].sum(), 1)
             else:
                 climb = df['elevation'].rolling(6).mean().diff()
                 meta['elevation'] = np.round(climb[ climb > 0 ].sum(), 1)
-            meta['speed_avg'] = np.round(meta['distance'] / (meta['mov_duration'].total_seconds() / 3600), 1)
-            meta['speed_max'] = np.round(df["speed"].max(), 1)
             meta['hr_avg'] = np.round(df["hr"].mean(), 2)
             meta['hr_max'] = df['hr'].max()
             meta['power_avg'] = np.round(df["power"].mean(), 2)
@@ -1944,7 +1956,7 @@ class ZwiftTraining:
             doc = f.read().strip()
         doc = minidom.parseString(doc)
         
-        title = xml_path_val(doc, 'trk|name', '')
+        title = xml_path_val(doc, 'gpx|trk|name', '', immediate=True)
         if not sport:
             if 'ride' in title.lower():
                 sport = 'biking'
@@ -1956,7 +1968,7 @@ class ZwiftTraining:
         trackpoints = doc.getElementsByTagName('trkpt')
         rows = []
         for trackpoint in trackpoints:
-            raw_time = pd.Timestamp(xml_path_val(trackpoint, 'time'))
+            raw_time = pd.Timestamp(xml_path_val(trackpoint, 'time', pd.NaT)) # may not exist for segments
             try:
                 latt = trackpoint.attributes['lat'].value
                 long = trackpoint.attributes['lon'].value
@@ -1975,7 +1987,11 @@ class ZwiftTraining:
             rows.append(row)
             
         df = pd.DataFrame(rows)
-        df['dtime'] = df['dtime'].dt.tz_convert(pytz.timezone("Asia/Jakarta")).dt.tz_localize(None)
+        try:
+            df['dtime'] = df['dtime'].dt.tz_convert(pytz.timezone("Asia/Jakarta")).dt.tz_localize(None)
+        except TypeError:
+            # Will raise exception if it is a NaT
+            pass
         
         meta = OrderedDict(dtime=df['dtime'].iloc[0], sport=sport, title=title, src_file=os.path.split(path)[-1],
                            route='', bike='', wheel='', note='')
@@ -2395,4 +2411,12 @@ class ZwiftTraining:
     
         fig.tight_layout()
         plt.show()
-                
+
+
+def test_parse_gpx():
+    ZwiftTraining.parse_gpx_file('/home/bennylp/Desktop/tmp/export-segments/Rouvy bromo 64512.gpx',
+                                 sport='biking')
+
+
+if __name__ == '__main__':
+    test_parse_gpx()
