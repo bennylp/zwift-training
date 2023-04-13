@@ -8,7 +8,7 @@ Cann. SuperSix EVO,standard,3090,2942,816500,36
 Cann. Synapse,standard,3095,2952,298200,12
 Cann. SystemSix,standard,3080,2966,497000,27
 Canyon Aeroad,standard,3082,2963,532500,23
-Canyon Aeroad 2021,standard,3081,2944,568000,10
+Canyon Aeroad 2021,standard,3079,2941,568000,10
 Canyon Speedmax,TT,2999,3013,710000,21
 Canyon Speedmax CF SLX Disc,TT,2981,3008,891000,26
 Canyon Ultimate,standard,3094,2942,461500,10
@@ -19,13 +19,14 @@ Cervelo S3D,standard,3084,2973,468600,13
 Cervelo S5,standard,3079,2951,603500,25
 Chapter2 Rere,standard,3088,2965,355000,16
 Chapter2 Tere,standard,3093,2943,390500,6
+Chapter2 TOA,standard,3080,2934,426000,18
 Cube Aerium,TT,2998,3012,248500,28
 Cube Litening,standard,3094,2945,177500,32
 Diamondback Andean,TT,2998,3010,572900,35
 Factor One,standard,3084,2967,426000,8
-Felt AR,standard,3079,2951,639000,34
+Felt AR,standard,3077,2949,639000,34
 Felt IA,TT,2984,3011,1065000,37
-Focus Izalco,standard,3083,2951,426000,8
+Focus Izalco Max,standard,3083,2950,426000,8
 Giant Propel Adv. SL,standard,3083,2955,816500,22
 Giant TCR Adv. SL,standard,3093,2947,305300,8
 Giant TCR Adv. SL Disc,standard,3091,2959,745500,14
@@ -42,6 +43,7 @@ Pinarello Bolide TT,TT,2999,3024,1065000,42
 Ribble Endurance,standard,3087,2967,390500,7
 Ridley Helium,standard,3095,2961,461500,3
 Ridley Noah Fast,standard,3085,2966,426000,9
+Scott Addict,standard,3083,2935,852000,33
 Scott Foil,standard,3088,2954,781000,17
 Scott Plasma,TT,2998,3004,852000,17
 Spec. Aethos S-Works,standard,3093,2929,923000,32
@@ -71,3 +73,4 @@ Zwift Carbon,standard,3095,2971,0,0
 Zwift Safety,standard,3096,2989,3550000,44
 Zwift Steel,standard,3100,2997,142000,7
 Zwift TT,TT,3016,3029,0,0
+Zwift Concept Z1,standard,3027,2938,0,30

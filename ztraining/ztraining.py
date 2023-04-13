@@ -149,6 +149,8 @@ class ZwiftTraining:
     def zwift_profile(self):
         if self._zwift_profile is None:
             self._zwift_profile = self.zwift_client.get_profile(self.zwift_id).profile
+            if not self._zwift_profile['ftp']:
+                self._zwift_profile['ftp'] = 200
             # Not sure what to do if metric is not used
             assert self._zwift_profile['useMetric'], "Not sure what to change if metric is not used"
             with open(os.path.join(self.profile_dir, 'last-profile.json'), 'wt') as fp:
@@ -933,10 +935,13 @@ class ZwiftTraining:
             curve_df = pd.DataFrame([power]).set_index('dtime')
             curve_dfs.append(curve_df)
     
-        curve_df = pd.concat(curve_dfs)
-        curve_df = curve_df.sort_values('dtime')                
-        
-        return curve_df
+        if curve_dfs:
+            curve_df = pd.concat(curve_dfs)
+            curve_df = curve_df.sort_values('dtime')                
+            
+            return curve_df
+        else:
+            return None
 
     @staticmethod
     def calc_max_powers(df):
