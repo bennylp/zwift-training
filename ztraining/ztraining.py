@@ -713,6 +713,18 @@ class ZwiftTraining:
         return levels.loc[ levels['level'] == level, 'xp' ].iloc[0]
     
     @staticmethod
+    def get_cycling_level_for_xp(xp):
+        df = pd.read_csv('data/levels.csv')
+        cur_level = df[ df['xp'] <= xp ].iloc[-1]
+        next_level = df[ df['xp'] > xp ].iloc[0]
+
+        xp_excess = xp - cur_level['xp']
+        xp_range = next_level['xp'] - cur_level['xp']
+
+        level = cur_level['level'] + xp_excess / xp_range
+        return level, xp_range - xp_excess
+    
+    @staticmethod
     def get_running_level_xp(level):
         levels = pd.read_csv('data/running_levels.csv')
         return levels.loc[ levels['level'] == level, 'xp' ].iloc[0]
